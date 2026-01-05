@@ -1,0 +1,123 @@
+================================================================================
+                    SPATIAL UNDERSTANDING - PROJECT DOCUMENTATION
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+1. BACKEND ARCHITECTURE OVERVIEW
+2. LINE EXTRACTION & POST-PROCESSING DETAILS
+
+
+================================================================================
+1. BACKEND ARCHITECTURE OVERVIEW
+================================================================================
+
+1.1. SYSTEM HIGH-LEVEL LOGIC
+----------------------------
+The backend acts as an intelligent orchestration layer. Its core philosophy is 
+"AI for Reasoning, CV for Precision".
+
+- AI (Gemini/Flux) is used to *draw* the measurement lines, leveraging visual 
+  reasoning to understand "where" lines should act on the product.
+- Computer Vision (OpenCV) is used to *read* those drawn lines into pixel-perfect
+  coordinates for the frontend.
+
+1.2. KEY COMPONENTS
+-------------------
+[A] Entry Point: main.py
+    Acts as the API Gateway.
+    - Endpoint: POST /detect-lines
+    - Function: Receives images, runs detection, returns JSON coordinates.
+
+[B] The Orchestrator: LineDetector (services/line_detector.py)
+    The central brain of the backend.
+    - Pre-processing: Resizes input images to standardized dimensions.
+    - AI Interfacing: Decides whether to call Gemini or Flux.
+    - Prompting: Constructs dynamic prompts (e.g., "Draw exactly N lines").
+    - Coordination: Passes generated images to the Extractor.
+    - Cleanup: Manages temporary files to prevent disk clutter.
+
+[C] AI Services
+    - services/gemini_service.py: Connects to Google Gemini 3 Pro Vision.
+    - services/flux_service.py: Connects to Flux 2 Pro.
+    Both services return a "schematic" image: a simplified view of the product 
+    with clearly drawn black measurement lines.
+
+[D] The Extractor: CoordinateExtractor (services/coordinate_extractor.py)
+    The Computer Vision engine.
+    - Converts the visual "drawing" into machine-readable (x, y) coordinates.
+    - Uses Hough Transforms and custom filtering to isolate lines.
+
+[E] Configuration: config.py
+    Central file for all tunable constraints (thresholds, API keys, Model flags).
+
+1.3. DATA FLOW
+--------------
+1. REQUEST:  Frontend sends Input Image & Reference Image.
+2. RESIZE:   Images are resized (e.g., max 1024px) to ensure model consistency.
+3. GENERATE: AI Model creates a new image with pure black measurement lines.
+4. EXTRACT:  CoordinateExtractor detects these lines using OpenCV.
+5. RESPONSE: List of start/end coordinates is sent back to the frontend.
+
+
+================================================================================
+2. LINE EXTRACTION & POST-PROCESSING DETAILS
+================================================================================
+
+This section details how the generated image is converted into precise data.
+
+2.1. THE CORE STRATEGY: "SIMPLE HOUGH"
+--------------------------------------
+We use standard Computer Vision to ensure lines are straight and accurate. All 
+extraction happens in `backend/services/coordinate_extractor.py`.
+
+[Step A] Detection (Hough Transform)
+    We use OpenCV's Probabilistic Hough Transform (HoughLinesP).
+    1. The image is converted to Grayscale.
+    2. A secure threshold isolates the black lines from the white background.
+    3. HoughLinesP detects line segments.
+       - Min Line Length: ~30px (Ignores noise/dots).
+       - Max Line Gap: 50px (Connects segments that are close together).
+
+[Step B] The "Fragmentation Fix"
+    AI-generated lines sometimes have tiny gaps. A raw Hough transform might 
+    read a single line as 3 separate broken lines. We fix this by merging:
+    
+    1. Grouping: Lines with similar Angle (+/- 5 deg) and Position (+/- 10px).
+    2. Proximity: If endpoints are within 50px, they are considered one line.
+    3. Merging: The segments are collapsed into a single long line.
+
+2.2. SELECTION STRATEGY: REFERENCE-BASED MATCHING
+-------------------------------------------------
+The AI may draw extra lines or artifacts. To know which lines are the "correct"
+measurement lines, we look at the Reference Image provided by the user.
+
+[Step A] Pattern Analysis
+    We scan the Reference Image to learn the visual pattern.
+    - Example: "The reference has 2 lines, both are inside the product boundary."
+
+[Step B] Candidate Scoring
+    We score every line detected in the generated image against this pattern.
+    - Is it Inside/Outside? Comparison with the reference pattern.
+    - Length: Longer lines get higher scores (measurement lines are usually long).
+    - Contrast: Lines must be dark black (high confidence).
+
+[Step C] Duplicate Removal
+    We select the top N lines based on score, but with a strict check:
+    - If a line matches the angle and position of a line we already selected, 
+      it is discarded as a duplicate.
+
+2.3. CRITICAL CONFIGURATION PARAMETERS
+--------------------------------------
+(Found in config.py)
+
+- MEASUREMENT_LINE_POSITION_THRESHOLD: 0.7
+  (A line is considered "Inside" if 70% of it covers the product)
+
+- LINE_SIMILARITY_ANGLE_THRESHOLD: 10 degrees
+  (Lines are considered parallels if angles diff < 10 deg)
+
+- LINE_SIMILARITY_DISTANCE_THRESHOLD: 0.05
+  (Lines are duplicates if they are within 5% overlapping distance)
+
+================================================================================

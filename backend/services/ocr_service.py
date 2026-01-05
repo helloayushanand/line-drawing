@@ -20,18 +20,6 @@ class OCRService:
         # Convert PIL to numpy
         img_arr = pil_to_numpy(image)
         
-        # Debug: Save input image being sent to OCR
-        try:
-            from datetime import datetime
-            import os
-            debug_dir = os.path.join(os.path.dirname(__file__), "..", "generated_images")
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            debug_path = os.path.join(debug_dir, f"debug_ocr_input_{timestamp}.png")
-            Image.fromarray(img_arr).save(debug_path)
-            print(f"  💾 Saved debug OCR input to: {debug_path}")
-        except Exception as e:
-            print(f"  ⚠️  Failed to save debug OCR image: {e}")
-        
         return img_arr
     
     def extract_labels(

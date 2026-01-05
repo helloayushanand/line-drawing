@@ -1,32 +1,42 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from models.schemas import LineDetectionRequest, LineDetectionResponse, LineDrawing
 from services.line_detector import LineDetector
 import time
+import os
 
 app = FastAPI(title="Line Detection API", version="1.0.0")
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Create API router with /api prefix
+api_router = APIRouter(prefix="/api")
+
 # Initialize line detector
 line_detector = LineDetector()
 
-@app.get("/")
-async def root():
-    return {"message": "Line Detection API", "status": "running"}
+# Get the path to the dist folder
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIST_DIR = os.path.join(BASE_DIR, "dist")
 
-@app.get("/health")
+# Serve static files
+if os.path.exists(DIST_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
+
+@api_router.get("/health")
 async def health():
     return {"status": "healthy"}
 
-@app.post("/detect-lines", response_model=LineDetectionResponse)
+@api_router.post("/detect-lines", response_model=LineDetectionResponse)
 async def detect_lines(request: LineDetectionRequest):
     """
     Main endpoint for line detection
@@ -37,6 +47,8 @@ async def detect_lines(request: LineDetectionRequest):
     - product_type: Optional product category (e.g., "chair", "table")
     - expected_line_count: Optional expected number of lines
     - line_types: Optional list of line labels (e.g., ["Width", "Height", "Depth"])
+    - model: Optional model selection ("gemini" or "flux")
+    - reference_lines: Optional list of reference lines with labels
     
     Output:
     - lines: List of detected lines with coordinates and labels
@@ -61,7 +73,7 @@ async def detect_lines(request: LineDetectionRequest):
             expected_line_count=request.expected_line_count,
             line_types=request.line_types,
             model=request.model or "gemini",
-            reference_lines=[line.dict() for line in request.reference_lines] if request.reference_lines else None,  # NEW
+            reference_lines=[line.dict() for line in request.reference_lines] if request.reference_lines else None,
         )
         
         processing_time = time.time() - start_time
@@ -78,7 +90,28 @@ async def detect_lines(request: LineDetectionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
+# Include API router
+app.include_router(api_router)
+
+# Keep /docs and /openapi.json accessible at root
+@app.get("/docs")
+async def docs_redirect():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/api/docs")
+
+# Serve frontend - must be last
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    """Serve frontend for all routes except API endpoints"""
+    if full_path.startswith(("api", "docs", "openapi.json")):
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    index_path = os.path.join(DIST_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    else:
+        raise HTTPException(status_code=404, detail="Frontend not found")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

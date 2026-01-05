@@ -41,13 +41,13 @@ export interface LineDetectionResponse {
 }
 
 // API base URL - can be configured via environment variable
-// Default to localhost:8000 for development
+// Default to production URL
 const getApiBaseUrl = () => {
   if (typeof window !== 'undefined') {
     // Check if VITE_API_URL is set in window (can be set via vite config)
-    return (window as any).__API_URL__ || 'http://localhost:8000';
+    return (window as any).__API_URL__ || 'https://ayush.sigaba.in';
   }
-  return 'http://localhost:8000';
+  return 'https://ayush.sigaba.in';
 };
 
 const API_BASE_URL = getApiBaseUrl();
@@ -103,7 +103,7 @@ export async function detectLines(
       console.log('📤 Sending reference lines with labels:', referenceLines);
     }
 
-    const response = await fetch(`${API_BASE_URL}/detect-lines`, {
+    const response = await fetch(`${API_BASE_URL}/api/detect-lines`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

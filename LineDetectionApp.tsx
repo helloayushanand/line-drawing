@@ -252,6 +252,7 @@ export function LineDetectionApp() {
 
             <ResultVisualization
               inputImageUrl={inputImageBase64 || inputImageUrl}
+              referenceImageUrl={referenceImageUrl}
               lines={results.lines}
             />
           </div>

@@ -8,7 +8,7 @@ from services.gemini_service import GeminiService
 from services.flux_service import FluxService
 from services.coordinate_extractor import CoordinateExtractor
 from services.ocr_service import OCRService  # NEW
-from utils.image_utils import decode_base64_image, pil_to_numpy, resize_to_square, encode_image_to_base64, resize_image
+from utils.image_utils import decode_base64_image, pil_to_numpy, resize_to_square, encode_image_to_base64, resize_image, expand_canvas_to_aspect_ratio
 from utils.edge_detection import detect_edges, snap_point_to_edge
 from models.schemas import LineDrawing, Point
 from config import settings
@@ -159,6 +159,13 @@ class LineDetector:
         if max(generated_image.size) > 1024:
             print(f"⚠️  Generated image size is {generated_image.size}, resizing to max 1024...")
             generated_image = resize_image(generated_image, 1024)
+        
+        # Expand generated image canvas to match reference image aspect ratio
+        ref_aspect_ratio = ref_img_square.width / ref_img_square.height
+        print(f"🔄 Expanding generated image canvas to match reference aspect ratio ({ref_aspect_ratio:.3f})...")
+        print(f"  Generated image size before expansion: {generated_image.size}")
+        generated_image = expand_canvas_to_aspect_ratio(generated_image, ref_aspect_ratio)
+        print(f"  Generated image size after expansion: {generated_image.size}")
         
         # Save generated image temporarily for debugging (auto-deleted)
         import tempfile

@@ -2,21 +2,13 @@ import cv2
 import numpy as np
 from PIL import Image
 from typing import List, Tuple, Optional
-from utils.edge_detection import detect_lines_hough, detect_lines_by_color, snap_point_to_edge, detect_edges
+from utils.edge_detection import detect_lines_hough, detect_lines_by_color, detect_edges
 from utils.image_utils import pil_to_numpy
-import io
-import json
 from config import settings
 
 class CoordinateExtractor:
     def __init__(self):
-        # Genai client not needed - using CV-only extraction
         pass
-    
-    # [DEPRECATED] extract_lines_from_generated_image
-    # This method was removed because we now strictly use extract_lines_from_generated_image_only
-    # See coordinate_extractor_backup.py if you need the old logic (image filtering, diffing, etc.)
-
     
     def extract_lines_from_generated_image_only(
         self,
@@ -24,12 +16,8 @@ class CoordinateExtractor:
         expected_line_count: Optional[int] = None,
         reference_image: Optional[Image.Image] = None
     ) -> List[dict]:
-        """
-        Extract line coordinates from generated image only (no original needed)
-        Uses CV detection directly on generated image
-        """
+        """Extract line coordinates from generated image"""
         try:
-            # Check if simple Hough should be used for DETECTION
             if settings.USE_SIMPLE_HOUGH:
                 print("  📐 Using simple Hough transform detection...")
                 cv_lines = self.extract_lines_simple_hough(
@@ -37,32 +25,22 @@ class CoordinateExtractor:
                 )
                 print(f"  ✓ Simple Hough found {len(cv_lines)} lines")
             else:
-                # Detect product mask first (needed for color-based detection)
                 product_mask = self._detect_product_mask(generated_image)
                 print(f"  ✓ Product mask detected: {product_mask.shape}")
-                
-                # Direct CV detection on generated image (with product mask for color-based detection)
                 cv_lines = self._extract_via_cv(generated_image, product_mask)
                 print(f"  ✓ CV detection found {len(cv_lines)} lines")
             
-            # Detect product mask if not already detected (needed for filtering/selection)
             if 'product_mask' not in locals():
                 product_mask = self._detect_product_mask(generated_image)
                 print(f"  ✓ Product mask detected (for filtering): {product_mask.shape}")
             
-            # Filter to keep only measurement lines (both inside and outside product)
-            # Note: Color-based detection already excludes product edges, but we still filter
-            # to ensure lines meet length and position requirements
             filtered_lines = self._filter_measurement_lines(cv_lines, product_mask, generated_image)
             print(f"  ✓ After filtering: {len(filtered_lines)} measurement lines detected")
             
-            # If filtering removed everything but we had candidates, and we're using simple hough, 
-            # maybe the filter was too aggressive? Fallback to raw lines for selection if needed.
             if len(filtered_lines) == 0 and len(cv_lines) > 0 and settings.USE_SIMPLE_HOUGH:
                  print("  ⚠️  Filtering removed all lines. Using raw candidates for selection.")
                  filtered_lines = cv_lines
 
-            # Rank and select top N lines
             if expected_line_count and len(filtered_lines) > expected_line_count:
                 if settings.USE_REFERENCE_BASED_MATCHING and reference_image is not None:
                     print("  🔄 Using reference-based matching...")
@@ -90,45 +68,27 @@ class CoordinateExtractor:
         max_line_gap: int = 10,
         hough_threshold: int = 50
     ) -> List[dict]:
-        """
-        Simple Hough transform approach for extracting black lines.
-        Works best for non-black products.
-        
-        Args:
-            image: Image with black lines drawn on it
-            black_threshold: Pixel value threshold for black (default: 50)
-            min_line_length: Minimum line length in pixels (default: 30)
-            max_line_gap: Maximum gap between line segments (default: 10)
-            hough_threshold: Hough transform threshold (default: 50)
-        
-        Returns:
-            List of lines with normalized coordinates (0-1)
-        """
+        """Extract black lines using Hough transform"""
         img_arr = pil_to_numpy(image)
         h, w = img_arr.shape[:2]
         
-        # Convert to grayscale if needed
         if len(img_arr.shape) == 3:
             gray = cv2.cvtColor(img_arr, cv2.COLOR_RGB2GRAY)
         else:
             gray = img_arr
         
-        # Threshold for black pixels (pixels < threshold are considered black)
         _, binary = cv2.threshold(gray, black_threshold, 255, cv2.THRESH_BINARY_INV)
-        # Now: 255 = black pixels, 0 = everything else
         
-        # Optional: Clean up with morphology to connect broken segments
         kernel = np.ones((3, 3), np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         
-        # Hough Line Transform
         lines = cv2.HoughLinesP(
             binary,
-            rho=1,              # Distance resolution in pixels
-            theta=np.pi/180,   # Angular resolution in radians
-            threshold=hough_threshold,  # Minimum votes
-            minLineLength=min_line_length,  # Minimum line length
-            maxLineGap=max_line_gap        # Maximum gap between segments
+            rho=1,
+            theta=np.pi/180,
+            threshold=hough_threshold,
+            minLineLength=min_line_length,
+            maxLineGap=max_line_gap
         )
         
         result = []
@@ -149,260 +109,14 @@ class CoordinateExtractor:
         
         return result
 
-    def _merge_collinear_segments(self, lines: List[dict], w: int, h: int) -> List[dict]:
-        """
-        Merge lines that are likely part of the same continuous line.
-        Grouping criteria:
-        1. Similar angle (orientation)
-        2. Similar distance from origin (rho)
-        3. Close proximity (endpoints close to each other)
-        """
-        if not lines:
-            return []
-            
-        # Convert to working format with angle/rho
-        working_lines = []
-        for i, line in enumerate(lines):
-            p1 = (line["start"]["x"] * w, line["start"]["y"] * h)
-            p2 = (line["end"]["x"] * w, line["end"]["y"] * h)
-            
-            # Calculate angle and rho
-            dx = p2[0] - p1[0]
-            dy = p2[1] - p1[1]
-            angle = np.degrees(np.arctan2(dy, dx)) % 180
-            
-            # Normal form: x*cos(theta) + y*sin(theta) = rho
-            # Calculate rho (perpendicular distance from origin)
-            # Use normal angle (angle + 90) for rho calculation
-            theta_rad = np.radians(angle + 90)
-            center_x = (p1[0] + p2[0]) / 2
-            center_y = (p1[1] + p2[1]) / 2
-            rho = center_x * np.cos(theta_rad) + center_y * np.sin(theta_rad)
-            
-            working_lines.append({
-                "line": line,
-                "angle": angle,
-                "rho": rho,
-                "p1": p1,
-                "p2": p2,
-                "merged": False
-            })
-        
-        merged_lines = []
-        
-        # Sort by angle to group potentially similar lines
-        working_lines.sort(key=lambda x: x["angle"])
-        
-        for i in range(len(working_lines)):
-            if working_lines[i]["merged"]:
-                continue
-                
-            current = working_lines[i]
-            base_line = current
-            
-            # Look for lines to merge with current
-            for j in range(i + 1, len(working_lines)):
-                if working_lines[j]["merged"]:
-                    continue
-                    
-                candidate = working_lines[j]
-                
-                # Check 1: Similar Angle
-                angle_diff = abs(current["angle"] - candidate["angle"])
-                if angle_diff > 90:
-                    angle_diff = 180 - angle_diff
-                
-                if angle_diff > 5.0: # 5 degrees tolerance
-                    # Since sorted by angle, if diff is large, we can stop checking this group?
-                    # No, because of wrap around (0 vs 179) and sorting. 
-                    # But for now, simple check.
-                    continue
-                
-                # Check 2: Similar segment bounds (Collinear check via Rho)
-                # Rho diff should be small (pixels)
-                if abs(current["rho"] - candidate["rho"]) > 10.0: # 10 pixels tolerance
-                    continue
-                
-                # Check 3: Proximity (Gap check)
-                # Project points onto the line defined by 'current' and check 1D distance?
-                # Or simple endpoint distance
-                # We simply check if the segments overlap or are close
-                
-                # Calculate extent along the line
-                # Rotate points by -angle to align with X axis
-                rad = np.radians(-current["angle"])
-                c, s = np.cos(rad), np.sin(rad)
-                
-                def rotate(x, y):
-                    return x * c - y * s, x * s + y * c
-                
-                cp1_proj = rotate(*current["p1"])[0]
-                cp2_proj = rotate(*current["p2"])[0]
-                cand_p1_proj = rotate(*candidate["p1"])[0]
-                cand_p2_proj = rotate(*candidate["p2"])[0]
-                
-                min_c, max_c = min(cp1_proj, cp2_proj), max(cp1_proj, cp2_proj)
-                min_cand, max_cand = min(cand_p1_proj, cand_p2_proj), max(cand_p1_proj, cand_p2_proj)
-                
-                # Check overlap or gap
-                # Overlap: max(start1, start2) < min(end1, end2)
-                # Gap: max(start1, start2) - min(end1, end2)
-                
-                dist_between = max(min_c, min_cand) - min(max_c, max_cand)
-                
-                if dist_between < 50: # 50 pixels gap tolerance (matches Hough gap)
-                    # MERGE
-                    working_lines[j]["merged"] = True
-                    
-                    # Update 'current' to include this line essentially
-                    # We need to find the extreme points of the merged line
-                    all_points = [current["p1"], current["p2"], candidate["p1"], candidate["p2"]]
-                    
-                    # Project all to axis to find extremes
-                    projs = [rotate(*p)[0] for p in all_points]
-                    min_idx = np.argmin(projs)
-                    max_idx = np.argmax(projs)
-                    
-                    current["p1"] = all_points[min_idx]
-                    current["p2"] = all_points[max_idx]
-                    
-                    # Recalculate rho/angle? Maybe average? keep original for stability
-            
-            # Create final parsed line
-            merged_lines.append({
-                "start": {"x": current["p1"][0] / w, "y": current["p1"][1] / h},
-                "end": {"x": current["p2"][0] / w, "y": current["p2"][1] / h},
-                "label": ""
-            })
-            
-        return merged_lines
-
-
-
-    def extract_lines_from_generated_image_simple(
-        self,
-        generated_image: Image.Image,
-        expected_line_count: Optional[int] = None,
-        black_threshold: int = 50,
-        min_line_length: int = 30,
-        max_line_gap: int = 10,
-        hough_threshold: int = 50
-    ) -> List[dict]:
-        """
-        Simple extraction using Hough transform only.
-        No product mask, no filtering, no complex logic.
-        Best for non-black products with clear black lines.
-        
-        Args:
-            generated_image: Image with black lines drawn on it
-            expected_line_count: Optional expected number of lines (for filtering)
-            black_threshold: Pixel value threshold for black (default: 50)
-            min_line_length: Minimum line length in pixels (default: 30)
-            max_line_gap: Maximum gap between line segments (default: 10)
-            hough_threshold: Hough transform threshold (default: 50)
-        
-        Returns:
-            List of lines with normalized coordinates (0-1)
-        """
-        print("  🔄 Using simple Hough transform extraction...")
-        
-        # Extract lines using simple Hough
-        lines = self.extract_lines_simple_hough(
-            generated_image,
-            black_threshold=black_threshold,
-            min_line_length=min_line_length,
-            max_line_gap=max_line_gap,
-            hough_threshold=hough_threshold
-        )
-        
-        print(f"  ✓ Simple Hough found {len(lines)} lines")
-        
-        # Optional: Filter by expected count if provided
-        if expected_line_count and len(lines) > expected_line_count:
-            print(f"  ⚠️  Found {len(lines)} lines, expected {expected_line_count}")
-            # Simple ranking: sort by line length
-            h, w = generated_image.size[1], generated_image.size[0]
-            scored_lines = []
-            for line in lines:
-                start_x = line["start"]["x"] * w
-                start_y = line["start"]["y"] * h
-                end_x = line["end"]["x"] * w
-                end_y = line["end"]["y"] * h
-                length = np.sqrt((end_x - start_x)**2 + (end_y - start_y)**2)
-                scored_lines.append((length, line))
-            
-            # Sort by length (descending)
-            scored_lines.sort(key=lambda x: x[0], reverse=True)
-            candidate_lines = [line for _, line in scored_lines]
-            
-            # Select lines that are DISTINCT (not similar to already selected)
-            selected_lines = []
-            for line in candidate_lines:
-                # Stop if we have enough lines
-                if expected_line_count and len(selected_lines) >= expected_line_count:
-                    break
-                
-                # Check similarity with already selected lines
-                is_distinct = True
-                for selected in selected_lines:
-                    if self._are_lines_similar(line, selected, generated_image):
-                        is_distinct = False
-                        break
-                
-                if is_distinct:
-                    selected_lines.append(line)
-            
-            lines = selected_lines
-            print(f"  ✓ Selected top {len(lines)} distinct longest lines")
-        
-        return lines
-    
-    # [DEPRECATED] _extract_via_diff, _extract_via_cv, _merge_lines_cv_only removed.
-
-    
-    def _refine_with_edges(
-        self,
-        line: dict,
-        original_image: Image.Image
-    ) -> dict:
-        """Refine line coordinates by snapping to edges"""
-        img_arr = pil_to_numpy(original_image)
-        edges = detect_edges(img_arr)
-        h, w = img_arr.shape[:2]
-        
-        # Snap start and end points
-        start_pixel = (
-            int(line["start"]["x"] * w),
-            int(line["start"]["y"] * h)
-        )
-        end_pixel = (
-            int(line["end"]["x"] * w),
-            int(line["end"]["y"] * h)
-        )
-        
-        refined_start = snap_point_to_edge(start_pixel, edges)
-        refined_end = snap_point_to_edge(end_pixel, edges)
-        
-        return {
-            "start": {"x": refined_start[0] / w, "y": refined_start[1] / h},
-            "end": {"x": refined_end[0] / w, "y": refined_end[1] / h},
-            "label": line.get("label", "")
-        }
-    
-
     def _extract_via_cv(self, image: Image.Image, product_mask: Optional[np.ndarray] = None) -> List[dict]:
-        """
-        Extract lines using color-based detection (product-aware).
-        Falls back to edge-based detection if color-based fails.
-        """
+        """Extract lines using color-based or edge-based detection"""
         img_arr = pil_to_numpy(image)
         
-        # Try color-based detection first (more targeted for black lines)
         try:
             lines = detect_lines_by_color(img_arr, product_mask)
         except Exception as e:
             print(f"  ⚠️  Color-based detection failed: {e}, falling back to edge-based")
-            # Fallback to edge-based detection
             lines = detect_lines_hough(img_arr)
         
         h, w = img_arr.shape[:2]
@@ -417,105 +131,29 @@ class CoordinateExtractor:
         return normalized_lines
 
     def _detect_product_mask(self, original_image: Image.Image) -> np.ndarray:
-        """
-        Detect product mask (binary: 1=product, 0=background)
-        Assumes white background - product is the main non-white object
-        """
+        """Detect product mask from white background"""
         img_arr = pil_to_numpy(original_image)
         h, w = img_arr.shape[:2]
         
-        # Convert to grayscale if needed
         if len(img_arr.shape) == 3:
             gray = cv2.cvtColor(img_arr, cv2.COLOR_RGB2GRAY)
         else:
             gray = img_arr
         
-        # Threshold to separate product from white background
-        # White background should be close to 255, product should be darker
         _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-        
-        # Find contours
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
-            # Fallback: return empty mask (all background)
             return np.zeros((h, w), dtype=np.uint8)
         
-        # Find largest contour (assuming product is the main object)
         largest_contour = max(contours, key=cv2.contourArea)
-        
-        # Create mask from largest contour
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(mask, [largest_contour], 255)
         
-        # Optional: dilate slightly to include product edges
         kernel = np.ones((3, 3), np.uint8)
         mask = cv2.dilate(mask, kernel, iterations=1)
         
         return mask
-    
-    def _filter_lines_outside_product(
-        self,
-        lines: List[dict],
-        product_mask: np.ndarray,
-        original_image: Image.Image
-    ) -> List[dict]:
-        """
-        Filter lines that are outside product mask/contour
-        Returns only lines where majority of points are outside the product
-        """
-        h, w = product_mask.shape[:2]
-        filtered_lines = []
-        
-        for line in lines:
-            # Get line points in pixel coordinates
-            start_x = int(line["start"]["x"] * w)
-            start_y = int(line["start"]["y"] * h)
-            end_x = int(line["end"]["x"] * w)
-            end_y = int(line["end"]["y"] * h)
-            
-            # Clamp to image bounds
-            start_x = max(0, min(w - 1, start_x))
-            start_y = max(0, min(h - 1, start_y))
-            end_x = max(0, min(w - 1, end_x))
-            end_y = max(0, min(h - 1, end_y))
-            
-            # Check if start and end points are outside product mask
-            start_inside = product_mask[start_y, start_x] > 0 if (0 <= start_y < h and 0 <= start_x < w) else False
-            end_inside = product_mask[end_y, end_x] > 0 if (0 <= end_y < h and 0 <= end_x < w) else False
-            
-            # Check midpoint
-            mid_x = int((start_x + end_x) / 2)
-            mid_y = int((start_y + end_y) / 2)
-            mid_x = max(0, min(w - 1, mid_x))
-            mid_y = max(0, min(h - 1, mid_y))
-            mid_inside = product_mask[mid_y, mid_x] > 0 if (0 <= mid_y < h and 0 <= mid_x < w) else False
-            
-            # Sample a few points along the line
-            num_samples = 5
-            inside_count = 0
-            total_samples = 0
-            
-            for i in range(num_samples + 1):
-                t = i / num_samples
-                x = int(start_x * (1 - t) + end_x * t)
-                y = int(start_y * (1 - t) + end_y * t)
-                x = max(0, min(w - 1, x))
-                y = max(0, min(h - 1, y))
-                
-                if 0 <= y < h and 0 <= x < w:
-                    total_samples += 1
-                    if product_mask[y, x] > 0:
-                        inside_count += 1
-            
-            # Line is considered outside if majority of points are outside
-            # Allow some overlap (e.g., up to 30% of line can be inside)
-            outside_ratio = 1.0 - (inside_count / total_samples) if total_samples > 0 else 1.0
-            
-            if outside_ratio >= 0.7:  # At least 70% of line is outside product
-                filtered_lines.append(line)
-        
-        return filtered_lines
     
     def _filter_measurement_lines(
         self,
@@ -523,56 +161,40 @@ class CoordinateExtractor:
         product_mask: np.ndarray,
         generated_image: Image.Image
     ) -> List[dict]:
-        """
-        Filter to keep only measurement lines (both inside and outside product)
-        Measurement lines are:
-        - Black lines drawn by Gemini (high contrast)
-        - Positioned with clear separation from product edges (for outside lines)
-        - Longer and more prominent than artifacts
-        """
+        """Filter measurement lines by length, contrast, and position"""
         h, w = product_mask.shape[:2]
         img_arr = pil_to_numpy(generated_image)
         
-        # Convert to grayscale for contrast analysis
         if len(img_arr.shape) == 3:
             gray = cv2.cvtColor(img_arr, cv2.COLOR_RGB2GRAY)
         else:
             gray = img_arr
         
         filtered_lines = []
-        
-        # Calculate distance transform to find distance from product edges
         mask_for_dist = product_mask.astype(np.uint8)
         if len(mask_for_dist.shape) > 2:
             mask_for_dist = cv2.cvtColor(mask_for_dist, cv2.COLOR_RGB2GRAY)
         
         inverted_mask = cv2.bitwise_not(mask_for_dist)
         dist_transform = cv2.distanceTransform(inverted_mask, cv2.DIST_L2, 5)
-        
-        # Calculate minimum line length threshold
         min_length = min(w, h) * settings.MEASUREMENT_LINE_MIN_LENGTH_RATIO
         
         for line in lines:
-            # Get line points in pixel coordinates
             start_x = int(line["start"]["x"] * w)
             start_y = int(line["start"]["y"] * h)
             end_x = int(line["end"]["x"] * w)
             end_y = int(line["end"]["y"] * h)
             
-            # Clamp to image bounds
             start_x = max(0, min(w - 1, start_x))
             start_y = max(0, min(h - 1, start_y))
             end_x = max(0, min(w - 1, end_x))
             end_y = max(0, min(h - 1, end_y))
             
-            # Calculate line length
             line_length = np.sqrt((end_x - start_x)**2 + (end_y - start_y)**2)
             
-            # Filter 1: Skip very short lines (likely artifacts)
             if line_length < min_length:
                 continue
             
-            # Sample points along line to analyze
             num_samples = 10
             inside_count = 0
             contrast_values = []
@@ -586,15 +208,11 @@ class CoordinateExtractor:
                 y = max(0, min(h - 1, y))
                 
                 if 0 <= y < h and 0 <= x < w:
-                    # Check if inside product
                     if product_mask[y, x] > 0:
                         inside_count += 1
                     
-                    # Get distance to product edge
                     dist_to_edge = dist_transform[y, x]
                     min_distance_to_edge = min(min_distance_to_edge, dist_to_edge)
-                    
-                    # Check contrast (measurement lines should be very dark/black)
                     pixel_value = gray[y, x]
                     contrast_values.append(pixel_value)
             
@@ -606,17 +224,11 @@ class CoordinateExtractor:
             avg_contrast = np.mean(contrast_values)
             max_contrast = np.max(contrast_values)
             
-            # Filter 2: High contrast check (must be very dark/black)
             is_high_contrast = (avg_contrast < settings.MEASUREMENT_LINE_CONTRAST_THRESHOLD and 
                               max_contrast < settings.MEASUREMENT_LINE_CONTRAST_MAX)
             
             if not is_high_contrast:
                 continue
-            
-            # Filter 3: Position filter
-            # - Outside lines: >=70% outside AND minimum distance from product edge
-            # - Inside lines: >=70% inside (no distance requirement, as they may be between legs)
-            # - Exclude: Lines that are 30-70% inside/outside (likely product edges)
             
             is_clear_position = (inside_ratio >= settings.MEASUREMENT_LINE_POSITION_THRESHOLD or 
                                outside_ratio >= settings.MEASUREMENT_LINE_POSITION_THRESHOLD)
@@ -624,12 +236,10 @@ class CoordinateExtractor:
             if not is_clear_position:
                 continue
             
-            # For outside lines, require minimum separation from product edge
             if outside_ratio >= settings.MEASUREMENT_LINE_POSITION_THRESHOLD:
                 if min_distance_to_edge < settings.MEASUREMENT_LINE_EDGE_SEPARATION:
-                    continue  # Too close to product edge, likely a product edge
+                    continue
             
-            # Keep line if it meets all criteria
             filtered_lines.append(line)
         
         return filtered_lines
@@ -788,16 +398,10 @@ class CoordinateExtractor:
             
             avg_distance = np.mean(min_distances) if min_distances else 0
             
-            # Combined score: normalize length and distance, then combine
-            # Normalize by image diagonal for length
             max_length = np.sqrt(w**2 + h**2)
             normalized_length = line_length / max_length if max_length > 0 else 0
-            
-            # Normalize distance (assuming max distance is half image size)
             max_distance = min(w, h) / 2
             normalized_distance = avg_distance / max_distance if max_distance > 0 else 0
-            
-            # Combined score (weighted: 60% length, 40% distance)
             score = 0.6 * normalized_length + 0.4 * normalized_distance
             
             scored_lines.append({
@@ -807,10 +411,8 @@ class CoordinateExtractor:
                 "distance": avg_distance
             })
         
-        # Sort by score (descending)
         scored_lines.sort(key=lambda x: x["score"], reverse=True)
         
-        # Select top N DISTINCT lines (avoid duplicates)
         selected = []
         for item in scored_lines:
             if len(selected) >= expected_count:
@@ -819,20 +421,17 @@ class CoordinateExtractor:
             candidate_line = item["line"]
             is_distinct = True
             
-            # Check if candidate is similar to any already selected line (in this batch)
             for selected_line in selected:
                 if self._are_lines_similar(candidate_line, selected_line, original_image):
                     is_distinct = False
                     break
             
-            # Check if candidate is similar to any ALREADY EXISTING line (from previous steps)
             if is_distinct and existing_lines:
                 for existing_line in existing_lines:
                     if self._are_lines_similar(candidate_line, existing_line, original_image):
                         is_distinct = False
                         break
             
-            # Only add if distinct from all previously selected lines
             if is_distinct:
                 selected.append(candidate_line)
         
@@ -846,14 +445,10 @@ class CoordinateExtractor:
         product_mask: np.ndarray,
         reference_image: Image.Image
     ) -> List[dict]:
-        """
-        Rank and select lines by matching to reference image pattern.
-        This is the new reference-based matching approach.
-        """
+        """Rank and select lines by matching to reference image pattern"""
         if len(lines) <= expected_count:
             return lines
         
-        # Step 1: Extract lines from reference image
         print("    📐 Extracting lines from reference image...")
         ref_product_mask = self._detect_product_mask(reference_image)
         ref_cv_lines = self._extract_via_cv(reference_image, ref_product_mask)
@@ -865,7 +460,6 @@ class CoordinateExtractor:
         
         print(f"    ✓ Found {len(ref_filtered_lines)} reference lines")
         
-        # Step 2: Classify reference lines (inside/outside)
         ref_lines_classified = []
         for ref_line in ref_filtered_lines:
             inside_ratio = self._calculate_inside_ratio(ref_line, ref_product_mask, reference_image)
@@ -876,12 +470,10 @@ class CoordinateExtractor:
                 "inside_ratio": inside_ratio
             })
         
-        # Count inside vs outside in reference
         ref_inside_count = sum(1 for rl in ref_lines_classified if rl["is_inside"])
         ref_outside_count = len(ref_lines_classified) - ref_inside_count
         print(f"    📊 Reference pattern: {ref_inside_count} inside, {ref_outside_count} outside")
         
-        # Step 3: For each reference line, find best matching generated line
         selected = []
         used_generated_indices = set()
         
@@ -902,7 +494,6 @@ class CoordinateExtractor:
             ref_line = ref_item["line"]
             ref_is_inside = ref_item["is_inside"]
             
-            # Find best matching generated line
             best_match = None
             best_score = -1
             best_idx = -1
@@ -911,14 +502,12 @@ class CoordinateExtractor:
                 if gen_idx in used_generated_indices:
                     continue
                 
-                # Filter 1: Must match inside/outside
                 gen_inside_ratio = self._calculate_inside_ratio(gen_line, product_mask, generated_image)
                 gen_is_inside = gen_inside_ratio >= settings.MEASUREMENT_LINE_POSITION_THRESHOLD
                 
                 if gen_is_inside != ref_is_inside:
-                    continue  # Skip if inside/outside doesn't match
+                    continue
                 
-                # Calculate match score
                 score = self._calculate_line_match_score(
                     ref_line, gen_line,
                     ref_product_mask, product_mask,
@@ -931,9 +520,7 @@ class CoordinateExtractor:
                     best_match = gen_line
                     best_idx = gen_idx
             
-            # Add best match if found and not duplicate of already selected lines
             if best_match is not None and best_score > 0:
-                # Check if this line is too similar to any already selected line
                 is_duplicate = False
                 for already_selected in selected:
                     if self._are_lines_similar(best_match, already_selected, generated_image):
@@ -945,14 +532,9 @@ class CoordinateExtractor:
                     selected.append(best_match)
                     used_generated_indices.add(best_idx)
                     print(f"    ✓ Matched reference line: score={best_score:.3f}, inside={ref_is_inside}")
-                else:
-                    # Try to find next best match that's not a duplicate
-                    # Remove this candidate and continue searching
-                    pass
             else:
                 print(f"    ⚠️  No match found for reference line (inside={ref_is_inside})")
         
-        # If we didn't get enough matches, fill remaining slots with current logic
         if len(selected) < expected_count:
             print(f"    ⚠️  Only found {len(selected)} matches, filling remaining {expected_count - len(selected)} slots with current logic")
             remaining_lines = [line for idx, line in enumerate(lines) if idx not in used_generated_indices]

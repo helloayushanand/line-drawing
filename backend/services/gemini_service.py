@@ -2,7 +2,6 @@ from google import genai
 from google.genai import types
 from PIL import Image
 import io
-import json
 from typing import List, Optional
 from config import settings
 from utils.image_utils import decode_base64_image
@@ -20,17 +19,13 @@ class GeminiService:
         product_type: Optional[str] = None,
         line_types: Optional[List[str]] = None,
         expected_line_count: Optional[int] = None,
-        reference_lines: Optional[List[dict]] = None  # NEW: Labeled reference lines
+        reference_lines: Optional[List[dict]] = None
     ) -> Optional[Image.Image]:
-        """
-        Use Gemini 3 to generate image with measurement lines drawn
-        Returns None if image generation is not available
-        """
+        """Generate image with measurement lines using Gemini 3"""
         try:
             input_img = decode_base64_image(input_image_base64)
             ref_img = decode_base64_image(reference_image_base64)
             
-            # Build label information from reference_lines
             label_info = ""
             if reference_lines:
                 label_info = "\n\n====================================================================\n"
@@ -43,11 +38,9 @@ class GeminiService:
                 label_info += "Place each label near its line (preferably near the start point) in a readable font.\n"
                 label_info += "Labels must be clearly visible in black text.\n\n"
             
-            # Build prompt
             line_info = ""
             if line_types:
                 line_info = f" The reference shows {len(line_types)} lines measuring: {', '.join(line_types)}."
-
             
             count_instruction = ""
             if expected_line_count:
@@ -211,7 +204,6 @@ Compliance with line count is more important than completeness.
                 print("✓ Received response from Gemini 3")
                 print(response, "GEMINI response")
                 
-                # Debug: Check for prompt feedback and safety blocks
                 if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
                     print(f"⚠️  Prompt feedback: {response.prompt_feedback}")
                     if hasattr(response.prompt_feedback, 'block_reason'):
@@ -219,7 +211,6 @@ Compliance with line count is more important than completeness.
                     if hasattr(response.prompt_feedback, 'safety_ratings'):
                         print(f"⚠️  Safety ratings: {response.prompt_feedback.safety_ratings}")
                 
-                # Parse response - extract image from candidates (matching working example)
                 generated_image = None
                 generation_text = None
                 
@@ -250,7 +241,6 @@ Compliance with line count is more important than completeness.
                     print("❌ No image found in response")
                     if generation_text:
                         print(f"Response was text instead: {generation_text[:200]}...")
-                    # Log all candidate finish reasons for debugging
                     finish_reasons = [f"candidate {c.index}: {c.finish_reason}" for c in response.candidates]
                     if finish_reasons:
                         print(f"  Finish reasons: {', '.join(finish_reasons)}")
@@ -269,14 +259,10 @@ Compliance with line count is more important than completeness.
             return None
     
     def _get_closest_aspect_ratio(self, image: Image.Image) -> str:
-        """
-        Calculate the aspect ratio of the image and return the closest supported standard aspect ratio.
-        Supported: '1:1', '3:4', '4:3', '9:16', '16:9'
-        """
+        """Return closest supported aspect ratio"""
         w, h = image.size
         ratio = w / h
         
-        # Standard ratios and their float values
         standards = {
             '1:1': 1.0,
             '3:4': 3/4,
@@ -285,91 +271,7 @@ Compliance with line count is more important than completeness.
             '16:9': 16/9
         }
         
-        # Find closest
         closest_ratio = min(standards.keys(), key=lambda k: abs(standards[k] - ratio))
         print(f"  📊 Input aspect ratio: {ratio:.2f} ({w}x{h}), closest standard: {closest_ratio}")
         return closest_ratio
-    
-    def predict_lines_direct(
-        self,
-        input_image_base64: str,
-        reference_image_base64: str,
-        expected_line_count: Optional[int] = None,
-        line_types: Optional[List[str]] = None
-    ) -> List[dict]:
-        """
-        Direct coordinate prediction via text output
-        Enhanced prompt for better accuracy
-        """
-        input_img = decode_base64_image(input_image_base64)
-        ref_img = decode_base64_image(reference_image_base64)
-        
-        line_count_info = f" The reference has {expected_line_count} measurement lines." if expected_line_count else ""
-        line_types_info = f" They measure: {', '.join(line_types)}." if line_types else ""
-        
-        prompt = f"""You are a technical drawing expert. Analyze both images:
-
-REFERENCE IMAGE (second image) Analysis:
-- Count the measurement lines{line_count_info}{line_types_info}
-- Note the positioning style (offset from edges, angles)
-- Observe labeling convention
-
-TASK: Apply the EXACT same measurement pattern to the NEW product (first image):
-1. Draw the same number of lines
-2. Match measurement types and labels
-3. Use similar positioning relative to product edges
-4. Maintain similar offset distances
-5. Match angles/orientations
-
-CRITICAL: Output precise coordinates. Lines must align with actual product edges.
-
-Output JSON array format:
-[
-  {{"start": [y, x], "end": [y, x], "label": "string"}},
-  ...
-]
-Coordinates normalized to 0-1000 range. Be extremely precise."""
-
-        try:
-            response = self.client.models.generate_content(
-                model=settings.GEMINI_MODEL,
-                contents=[input_img, ref_img, prompt],
-                config=types.GenerateContentConfig(
-                    response_modalities=['TEXT'],
-                )
-            )
-            
-            # Parse JSON response
-            response_text = ""
-            for candidate in response.candidates:
-                for part in candidate.content.parts:
-                    if hasattr(part, "text") and part.text:
-                        response_text = part.text.strip()
-                        break
-                if response_text:
-                    break
-            
-            # Handle markdown code blocks if present
-            if '```json' in response_text:
-                response_text = response_text.split('```json')[1].split('```')[0].strip()
-            elif '```' in response_text:
-                response_text = response_text.split('```')[1].split('```')[0].strip()
-            
-            lines = json.loads(response_text)
-            
-            # Ensure it's a list
-            if not isinstance(lines, list):
-                lines = [lines]
-            
-            return lines
-            
-        except json.JSONDecodeError as e:
-            print(f"JSON decode error: {e}")
-            print(f"Response text: {response_text[:500]}")
-            return []
-        except Exception as e:
-            print(f"Error in predict_lines_direct: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
 

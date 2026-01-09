@@ -8,11 +8,13 @@ import { LineDrawing } from './api';
 
 interface ResultVisualizationProps {
   inputImageUrl: string | null;
+  referenceImageUrl: string | null;
   lines: LineDrawing[];
 }
 
 export function ResultVisualization({
   inputImageUrl,
+  referenceImageUrl,
   lines,
 }: ResultVisualizationProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,22 +30,112 @@ export function ResultVisualization({
     fetch('http://127.0.0.1:7242/ingest/3cd10946-e982-4b9e-8550-52d78fdb1a8d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ResultVisualization.tsx:26',message:'useEffect triggered',data:{linesCount:lines.length,hasImageUrl:!!imageUrlForLines,hasCanvas:!!canvasRef.current},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
     // #endregion
     if (!imageUrlForLines || !canvasRef.current || lines.length === 0) return;
+    
+    // If no reference image URL, fall back to original behavior
+    if (!referenceImageUrl) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const img = new Image();
+      img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        
+        // Draw lines
+        const blackColor = 'rgb(0, 0, 0)';
+        lines.forEach((line) => {
+          const startX = line.start.x * canvas.width;
+          const startY = line.start.y * canvas.height;
+          const endX = line.end.x * canvas.width;
+          const endY = line.end.y * canvas.height;
+          
+          ctx.save();
+          ctx.strokeStyle = blackColor;
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.moveTo(startX, startY);
+          ctx.lineTo(endX, endY);
+          ctx.stroke();
+          
+          ctx.fillStyle = blackColor;
+          ctx.beginPath();
+          ctx.arc(startX, startY, 8, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(endX, endY, 8, 0, 2 * Math.PI);
+          ctx.fill();
+          
+          const label = line.label || '';
+          if (label) {
+            ctx.fillStyle = blackColor;
+            ctx.font = 'bold 16px Arial';
+            ctx.fillText(label, startX + 10, startY - 10);
+          }
+          ctx.restore();
+        });
+        
+        setImageLoaded(true);
+      };
+      img.src = imageUrlForLines;
+      return;
+    }
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const img = new Image();
-    img.onload = () => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3cd10946-e982-4b9e-8550-52d78fdb1a8d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ResultVisualization.tsx:34',message:'Image loaded',data:{imgWidth:img.width,imgHeight:img.height,linesCount:lines.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
-      // Set canvas size to match image
-      canvas.width = img.width;
-      canvas.height = img.height;
-
-      // Draw image
-      ctx.drawImage(img, 0, 0);
+    // Load both input and reference images
+    const inputImg = new Image();
+    const refImg = new Image();
+    
+    let inputLoaded = false;
+    let refLoaded = false;
+    
+    const drawExpandedCanvas = () => {
+      if (!inputLoaded || !refLoaded) return;
+      
+      // Calculate reference aspect ratio
+      const refAspect = refImg.width / refImg.height;
+      const inputAspect = inputImg.width / inputImg.height;
+      
+      // Calculate expanded canvas dimensions that match reference aspect ratio
+      let canvasWidth: number;
+      let canvasHeight: number;
+      
+      if (inputAspect > refAspect) {
+        // Input is wider relative to reference
+        canvasWidth = inputImg.width;
+        canvasHeight = Math.ceil(inputImg.width / refAspect);
+        if (canvasHeight < inputImg.height) {
+          canvasHeight = inputImg.height;
+          canvasWidth = Math.ceil(inputImg.height * refAspect);
+        }
+      } else {
+        // Input is taller relative to reference
+        canvasHeight = inputImg.height;
+        canvasWidth = Math.ceil(inputImg.height * refAspect);
+        if (canvasWidth < inputImg.width) {
+          canvasWidth = inputImg.width;
+          canvasHeight = Math.ceil(inputImg.width / refAspect);
+        }
+      }
+      
+      // Set canvas size
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+      
+      // Fill with white background
+      ctx.fillStyle = 'rgb(255, 255, 255)';
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+      
+      // Calculate offset to center input image
+      const xOffset = (canvasWidth - inputImg.width) / 2;
+      const yOffset = (canvasHeight - inputImg.height) / 2;
+      
+      // Draw input image centered on expanded canvas
+      ctx.drawImage(inputImg, xOffset, yOffset);
 
       // Draw lines in black
       const blackColor = 'rgb(0, 0, 0)';
@@ -67,7 +159,7 @@ export function ResultVisualization({
           // #endregion
         }
         
-        // Convert normalized coordinates to pixel coordinates
+        // Convert normalized coordinates to pixel coordinates (normalized to expanded canvas)
         const startX = line.start.x * canvas.width;
         const startY = line.start.y * canvas.height;
         const endX = line.end.x * canvas.width;
@@ -121,8 +213,20 @@ export function ResultVisualization({
 
       setImageLoaded(true);
     };
-    img.src = imageUrlForLines;
-  }, [imageUrlForLines, lines]);
+    
+    inputImg.onload = () => {
+      inputLoaded = true;
+      drawExpandedCanvas();
+    };
+    
+    refImg.onload = () => {
+      refLoaded = true;
+      drawExpandedCanvas();
+    };
+    
+    inputImg.src = imageUrlForLines;
+    refImg.src = referenceImageUrl;
+  }, [imageUrlForLines, referenceImageUrl, lines]);
 
   return (
     <div className="border border-gray-300 rounded p-4 bg-white">

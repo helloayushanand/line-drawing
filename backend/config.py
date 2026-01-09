@@ -29,6 +29,11 @@ class Settings:
     LINE_MORPH_KERNEL_SIZE: int = 3  # kernel size for morphological operations
     USE_REFERENCE_BASED_MATCHING: bool = True  # Set to True to use reference-based line matching instead of current logic
     USE_SIMPLE_HOUGH: bool = True  # Set to True to use simple Hough transform (for non-black products)
+    # Line extension parameters
+    LINE_EXTENSION_STEP_SIZE: int = 2  # pixels to step when extending (smaller = more precise but slower)
+    LINE_EXTENSION_MAX_DISTANCE: int = 200  # max pixels to extend in each direction (safety limit)
+    LINE_EXTENSION_MIN_PIXEL_RATIO: float = 0.3  # minimum ratio of line pixels in a window to continue extension
+    LINE_EXTENSION_WINDOW_SIZE: int = 5  # size of window to check for line pixels when extending
 
 settings = Settings()
 

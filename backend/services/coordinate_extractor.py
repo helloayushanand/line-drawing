@@ -33,7 +33,11 @@ class CoordinateExtractor:
             if settings.USE_SIMPLE_HOUGH:
                 print("  📐 Using simple Hough transform detection...")
                 cv_lines = self.extract_lines_simple_hough(
-                    generated_image
+                    generated_image,
+                    black_threshold=settings.BLACK_LINE_THRESHOLD,
+                    min_line_length=settings.MIN_LINE_LENGTH,
+                    max_line_gap=settings.MAX_LINE_GAP,
+                    hough_threshold=settings.HOUGH_LINE_THRESHOLD
                 )
                 print(f"  ✓ Simple Hough found {len(cv_lines)} lines")
             else:
@@ -44,6 +48,27 @@ class CoordinateExtractor:
                 # Direct CV detection on generated image (with product mask for color-based detection)
                 cv_lines = self._extract_via_cv(generated_image, product_mask)
                 print(f"  ✓ CV detection found {len(cv_lines)} lines")
+            
+            # Extend detected lines to full extent
+            print("  🔄 Extending lines to full extent...")
+            img_arr = pil_to_numpy(generated_image)
+            h_ext, w_ext = img_arr.shape[:2]
+            if len(img_arr.shape) == 3:
+                gray_ext = cv2.cvtColor(img_arr, cv2.COLOR_RGB2GRAY)
+            else:
+                gray_ext = img_arr
+            _, binary_mask = cv2.threshold(gray_ext, settings.BLACK_LINE_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
+            
+            extended_lines = []
+            for line in cv_lines:
+                try:
+                    extended_line = self._extend_line_to_full_extent(line, generated_image, binary_mask)
+                    extended_lines.append(extended_line)
+                except Exception as e:
+                    print(f"  ⚠️  Failed to extend line: {e}, using original")
+                    extended_lines.append(line)
+            cv_lines = extended_lines
+            print(f"  ✓ Extended {len(cv_lines)} lines")
             
             # Detect product mask if not already detected (needed for filtering/selection)
             if 'product_mask' not in locals():
@@ -74,14 +99,12 @@ class CoordinateExtractor:
                     print("  🔄 Using current ranking logic...")
                     filtered_lines = self._rank_and_select_lines(filtered_lines, expected_line_count, generated_image, product_mask)
                     print(f"  ✓ After ranking: {len(filtered_lines)} distinct lines selected")
-            
             return filtered_lines
         except Exception as e:
             print(f"❌ Error in extract_lines_from_generated_image_only: {e}")
             import traceback
             traceback.print_exc()
             raise
-    
     def extract_lines_simple_hough(
         self,
         image: Image.Image,
@@ -148,6 +171,133 @@ class CoordinateExtractor:
                 })
         
         return result
+
+    def _extend_line_to_full_extent(
+        self,
+        line: dict,
+        image: Image.Image,
+        binary_mask: np.ndarray
+    ) -> dict:
+        """
+        Extend a detected line segment along its direction to find the full extent of the line.
+        
+        Args:
+            line: Line dict with normalized coordinates (0-1)
+            image: PIL Image
+            binary_mask: Binary mask where 255 = line pixels, 0 = background
+            
+        Returns:
+            Extended line dict with normalized coordinates
+        """
+        h, w = binary_mask.shape[:2]
+        
+        # Convert normalized coordinates to pixel coordinates
+        start_x = int(line["start"]["x"] * w)
+        start_y = int(line["start"]["y"] * h)
+        end_x = int(line["end"]["x"] * w)
+        end_y = int(line["end"]["y"] * h)
+        
+        # Calculate line direction vector
+        dx = end_x - start_x
+        dy = end_y - start_y
+        line_length = np.sqrt(dx**2 + dy**2)
+        
+        # Handle edge case: zero-length line
+        if line_length < 1:
+            return line
+        
+        # Normalize direction vector
+        dx_norm = dx / line_length
+        dy_norm = dy / line_length
+        
+        # Extension parameters
+        step_size = settings.LINE_EXTENSION_STEP_SIZE
+        max_distance = min(settings.LINE_EXTENSION_MAX_DISTANCE, max(w, h) // 5)  # Limit to 20% of image dimension
+        window_size = settings.LINE_EXTENSION_WINDOW_SIZE
+        min_pixel_ratio = settings.LINE_EXTENSION_MIN_PIXEL_RATIO
+        
+        # Extend from start point backwards
+        new_start_x, new_start_y = self._extend_line_direction(
+            start_x, start_y, -dx_norm, -dy_norm, binary_mask, w, h,
+            step_size, max_distance, window_size, min_pixel_ratio
+        )
+        
+        # Extend from end point forwards
+        new_end_x, new_end_y = self._extend_line_direction(
+            end_x, end_y, dx_norm, dy_norm, binary_mask, w, h,
+            step_size, max_distance, window_size, min_pixel_ratio
+        )
+        
+        # Convert back to normalized coordinates
+        return {
+            "start": {"x": new_start_x / w, "y": new_start_y / h},
+            "end": {"x": new_end_x / w, "y": new_end_y / h},
+            "label": line.get("label", "")
+        }
+    
+    def _extend_line_direction(
+        self,
+        start_x: int,
+        start_y: int,
+        dx_norm: float,
+        dy_norm: float,
+        binary_mask: np.ndarray,
+        w: int,
+        h: int,
+        step_size: int,
+        max_distance: int,
+        window_size: int,
+        min_pixel_ratio: float
+    ) -> Tuple[int, int]:
+        """
+        Extend a line in a given direction until line pixels are no longer detected.
+        
+        Returns:
+            Extended point (x, y) in pixel coordinates
+        """
+        current_x = float(start_x)
+        current_y = float(start_y)
+        distance_extended = 0
+        half_window = window_size // 2
+        
+        while distance_extended < max_distance:
+            # Calculate next point
+            next_x = current_x + dx_norm * step_size
+            next_y = current_y + dy_norm * step_size
+            
+            # Check if we've hit image boundaries
+            if next_x < 0 or next_x >= w or next_y < 0 or next_y >= h:
+                break
+            
+            # Sample pixels in a window around the next point
+            x_int = int(round(next_x))
+            y_int = int(round(next_y))
+            
+            # Check window bounds
+            y_min = max(0, y_int - half_window)
+            y_max = min(h, y_int + half_window + 1)
+            x_min = max(0, x_int - half_window)
+            x_max = min(w, x_int + half_window + 1)
+            
+            if y_max <= y_min or x_max <= x_min:
+                break
+            
+            # Count line pixels in window
+            window = binary_mask[y_min:y_max, x_min:x_max]
+            line_pixel_count = np.sum(window > 0)
+            total_pixels = window.size
+            pixel_ratio = line_pixel_count / total_pixels if total_pixels > 0 else 0
+            
+            # If ratio is below threshold, stop extending
+            if pixel_ratio < min_pixel_ratio:
+                break
+            
+            # Continue extending
+            current_x = next_x
+            current_y = next_y
+            distance_extended += step_size
+        
+        return int(round(current_x)), int(round(current_y))
 
     def _merge_collinear_segments(self, lines: List[dict], w: int, h: int) -> List[dict]:
         """

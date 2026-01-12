@@ -133,12 +133,11 @@ Any line without an ID is FORBIDDEN.
 LINE LOCK RULE (CRITICAL)
 ====================================================================
 
-- You may ONLY draw lines listed in the registry (L1…LN)
+- You may ONLY draw lines listed in the registry (L1…LN). One line for each L.
 - You may NOT split one line into multiple lines
 - You may NOT combine lines
 - You may NOT replace missing lines with new ones
 - You must label the correct set of lines in the generated image as in reference image. Do not put wrong labels.
-- You are not allowed to generate more than one line for each label. One label will always have only one line.
 
 If a line cannot be confidently mapped, SKIP it.
 Skipping is allowed. Adding is NOT.

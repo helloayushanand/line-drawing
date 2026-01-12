@@ -97,6 +97,7 @@ NEGATIVE CONSTRAINTS (ABSOLUTE)
 - DO NOT draw decorative or helper lines
 - DO NOT redraw the product with visible edges
 - DO NOT copy pixels from the reference
+- DO NOT reposition or resize the product. You can not change the position or size of the product. You can only draw lines on the product.
 
 ====================================================================
 STEP 1 — REFERENCE LINE REGISTRY (MANDATORY)
@@ -125,7 +126,7 @@ Any line without an ID is FORBIDDEN.
 LINE LOCK RULE (CRITICAL)
 ====================================================================
 
-- You may ONLY draw lines listed in the registry (L1…LN)
+- You may ONLY draw lines listed in the registry (L1…LN). One line for each L.
 - You may NOT split one line into multiple lines
 - You may NOT combine lines
 - You may NOT replace missing lines with new ones

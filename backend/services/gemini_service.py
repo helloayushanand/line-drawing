@@ -62,17 +62,19 @@ class GeminiService:
 
 You are a TECHNICAL MEASUREMENT SCHEMATIC GENERATOR.
 
-Your task is to add measurement guide lines to the PRODUCT in the FIRST image,
+Your task is to add measurement guide lines to the PRODUCT in the FIRST image (without rotating the product),
 using the SECOND image strictly as a REFERENCE for which measurement lines exist.
 
 {label_info}
 
 ====================================================================
-CRITICAL OBJECTIVE: EXACT LINE TRANSFER (NO EXCEPTIONS)
+CRITICAL OBJECTIVE:  LINE TRANSFER (NO EXCEPTIONS)
 ====================================================================
 
 You must transfer ONLY the measurement lines that already exist in the REFERENCE image.
 You are NOT allowed to invent, infer, split, merge, extend, or add measurements.
+If the orientation of reference image and input image is not same, this does not mean that you have to rotate the input image. 
+Rotation of product in input image is not allowed. you have to draw lines by keeping the angle of input image in mind. Product cannot be rotated. 
 
 Drawing MORE lines than the reference is a CRITICAL FAILURE.
 Drawing FEWER lines is allowed ONLY if a line cannot be confidently mapped.
@@ -89,6 +91,7 @@ PRODUCT:
 - Drawn as a VERY FAINT, ghost-like outline only
 - Color: light gray (#E0E0E0)
 - No visible edge lines, no fill, no shading
+- In the same size, orientation, angle as in the input image. It cannot be changed. Do not try to match the orientation with reference image.
 
 MEASUREMENT LINES:
 - Color: Pure black (#000000)
@@ -105,6 +108,7 @@ NEGATIVE CONSTRAINTS (ABSOLUTE)
 - DO NOT redraw the product with visible edges
 - DO NOT copy pixels from the reference
 - DO NOT reposition or resize the product. You can not change the position or size of the product. You can only draw lines on the product.
+- Rotation of product in input image is not allowed. you have to draw lines by keeping the angle of input image in mind. Product cannot be rotated. 
 
 ====================================================================
 STEP 1 — REFERENCE LINE REGISTRY (MANDATORY)

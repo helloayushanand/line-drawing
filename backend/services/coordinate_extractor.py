@@ -1050,24 +1050,30 @@ class CoordinateExtractor:
             angle_diff = 180 - angle_diff
         
         # Check if lines are parallel (similar angle) and close
-        if angle_diff < settings.LINE_SIMILARITY_ANGLE_THRESHOLD:
-            # If lines are parallel and close, check overlap
-            # Calculate perpendicular distance between parallel lines
-            # For parallel lines: distance = |ax + by + c| / sqrt(a^2 + b^2)
-            # Using line equation: ax + by + c = 0
-            if abs(line1_dx) < 1e-6:  # Vertical line
-                perp_distance = abs(line1_mid_x - line2_mid_x) / w
-            elif abs(line1_dy) < 1e-6:  # Horizontal line
-                perp_distance = abs(line1_mid_y - line2_mid_y) / h
-            else:
-                # General line: y = mx + b
-                m1 = line1_dy / line1_dx
-                b1 = line1_start_y - m1 * line1_start_x
-                m2 = line2_dy / line2_dx
-                b2 = line2_start_y - m2 * line2_start_x
-                
-                # Distance between parallel lines
-                perp_distance = abs(b1 - b2) / np.sqrt(m1**2 + 1) / max(w, h)
+            if angle_diff < settings.LINE_SIMILARITY_ANGLE_THRESHOLD:
+                # If lines are parallel and close, check overlap
+                # Calculate perpendicular distance between parallel lines
+                # For parallel lines: distance = |ax + by + c| / sqrt(a^2 + b^2)
+                # Using line equation: ax + by + c = 0
+                if abs(line1_dx) < 1e-6:  # Vertical line (line1)
+                    # Both lines are vertical (since they're parallel)
+                    perp_distance = abs(line1_mid_x - line2_mid_x) / w
+                elif abs(line1_dy) < 1e-6:  # Horizontal line (line1)
+                    # Both lines are horizontal (since they're parallel)
+                    perp_distance = abs(line1_mid_y - line2_mid_y) / h
+                elif abs(line2_dx) < 1e-6:  # Vertical line (line2) - shouldn't happen if parallel, but handle it
+                    perp_distance = abs(line1_mid_x - line2_mid_x) / w
+                elif abs(line2_dy) < 1e-6:  # Horizontal line (line2) - shouldn't happen if parallel, but handle it
+                    perp_distance = abs(line1_mid_y - line2_mid_y) / h
+                else:
+                    # General line: y = mx + b (both lines are neither vertical nor horizontal)
+                    m1 = line1_dy / line1_dx
+                    b1 = line1_start_y - m1 * line1_start_x
+                    m2 = line2_dy / line2_dx
+                    b2 = line2_start_y - m2 * line2_start_x
+                    
+                    # Distance between parallel lines
+                    perp_distance = abs(b1 - b2) / np.sqrt(m1**2 + 1) / max(w, h)
             
             # If parallel and very close, they're similar
             if perp_distance < settings.LINE_SIMILARITY_DISTANCE_THRESHOLD:

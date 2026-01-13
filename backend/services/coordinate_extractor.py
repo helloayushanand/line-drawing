@@ -75,30 +75,122 @@ class CoordinateExtractor:
                 product_mask = self._detect_product_mask(generated_image)
                 print(f"  ✓ Product mask detected (for filtering): {product_mask.shape}")
             
+            # Store raw lines before filtering (for fallback)
+            raw_cv_lines = cv_lines.copy()
+            
             # Filter to keep only measurement lines (both inside and outside product)
             # Note: Color-based detection already excludes product edges, but we still filter
             # to ensure lines meet length and position requirements
             filtered_lines = self._filter_measurement_lines(cv_lines, product_mask, generated_image)
-            print(f"  ✓ After filtering: {len(filtered_lines)} measurement lines detected")
+            print(f"  ✓ After strict filtering: {len(filtered_lines)} measurement lines detected")
+            
+            # CRITICAL: Ensure we have enough lines to match expected count
+            if expected_line_count and len(filtered_lines) < expected_line_count:
+                print(f"  ⚠️  Only {len(filtered_lines)} lines after filtering, but {expected_line_count} expected")
+                print(f"  🔄 Attempting relaxed filtering to recover more lines...")
+                
+                # Try relaxed filtering
+                relaxed_filtered = self._filter_measurement_lines_relaxed(raw_cv_lines, product_mask, generated_image)
+                print(f"  ✓ After relaxed filtering: {len(relaxed_filtered)} lines detected")
+                
+                # Use relaxed filtering result if it gives us more lines
+                if len(relaxed_filtered) >= len(filtered_lines):
+                    filtered_lines = relaxed_filtered
+                    print(f"  ✓ Using relaxed filtering result ({len(filtered_lines)} lines)")
+                
+                # If still insufficient, fall back to raw lines (but still apply ranking)
+                if len(filtered_lines) < expected_line_count:
+                    print(f"  ⚠️  Still insufficient lines ({len(filtered_lines)} < {expected_line_count})")
+                    print(f"  🔄 Falling back to raw detected lines and applying ranking...")
+                    # Use all raw lines, but we'll rank them to get the best ones
+                    filtered_lines = raw_cv_lines
+                else:
+                    print(f"  ✓ Relaxed filtering recovered enough lines ({len(filtered_lines)} >= {expected_line_count})")
             
             # If filtering removed everything but we had candidates, and we're using simple hough, 
             # maybe the filter was too aggressive? Fallback to raw lines for selection if needed.
-            if len(filtered_lines) == 0 and len(cv_lines) > 0 and settings.USE_SIMPLE_HOUGH:
+            if len(filtered_lines) == 0 and len(raw_cv_lines) > 0 and settings.USE_SIMPLE_HOUGH:
                  print("  ⚠️  Filtering removed all lines. Using raw candidates for selection.")
-                 filtered_lines = cv_lines
+                 filtered_lines = raw_cv_lines
 
-            # Rank and select top N lines
-            if expected_line_count and len(filtered_lines) > expected_line_count:
-                if settings.USE_REFERENCE_BASED_MATCHING and reference_image is not None:
-                    print("  🔄 Using reference-based matching...")
-                    filtered_lines = self._rank_and_select_lines_reference_based(
-                        filtered_lines, expected_line_count, generated_image, product_mask, reference_image
-                    )
-                    print(f"  ✓ After reference-based ranking: {len(filtered_lines)} distinct lines selected")
+            # Rank and select lines to ensure we have exactly expected_line_count
+            if expected_line_count:
+                if len(filtered_lines) > expected_line_count:
+                    # Too many lines - select best N
+                    if settings.USE_REFERENCE_BASED_MATCHING and reference_image is not None:
+                        print("  🔄 Using reference-based matching to select best lines...")
+                        filtered_lines = self._rank_and_select_lines_reference_based(
+                            filtered_lines, expected_line_count, generated_image, product_mask, reference_image
+                        )
+                        print(f"  ✓ After reference-based ranking: {len(filtered_lines)} distinct lines selected")
+                    else:
+                        print("  🔄 Using current ranking logic to select best lines...")
+                        filtered_lines = self._rank_and_select_lines(filtered_lines, expected_line_count, generated_image, product_mask)
+                        print(f"  ✓ After ranking: {len(filtered_lines)} distinct lines selected")
+                elif len(filtered_lines) < expected_line_count:
+                    # Too few lines - still apply ranking to get best candidates, then fill from raw if needed
+                    print(f"  🔄 Only {len(filtered_lines)} lines available, expected {expected_line_count}")
+                    print(f"  🔄 Applying ranking to select best candidates...")
+                    
+                    # Rank available lines to get best ones
+                    if settings.USE_REFERENCE_BASED_MATCHING and reference_image is not None:
+                        ranked_lines = self._rank_and_select_lines_reference_based(
+                            filtered_lines, len(filtered_lines), generated_image, product_mask, reference_image
+                        )
+                    else:
+                        ranked_lines = self._rank_and_select_lines(
+                            filtered_lines, len(filtered_lines), generated_image, product_mask
+                        )
+                    
+                    # If we have raw lines that weren't in filtered, try to add them
+                    if len(ranked_lines) < expected_line_count and len(raw_cv_lines) > len(filtered_lines):
+                        print(f"  🔄 Attempting to fill remaining slots from raw candidates...")
+                        # Get lines that weren't in filtered set by comparing coordinates
+                        def line_key(line):
+                            """Create a unique key for a line based on its coordinates"""
+                            return (round(line.get('start', {}).get('x', 0), 4),
+                                   round(line.get('start', {}).get('y', 0), 4),
+                                   round(line.get('end', {}).get('x', 0), 4),
+                                   round(line.get('end', {}).get('y', 0), 4))
+                        
+                        filtered_keys = {line_key(line) for line in filtered_lines}
+                        remaining_candidates = [line for line in raw_cv_lines 
+                                              if line_key(line) not in filtered_keys]
+                        
+                        # Rank remaining candidates and add best ones
+                        if remaining_candidates:
+                            if settings.USE_REFERENCE_BASED_MATCHING and reference_image is not None:
+                                additional = self._rank_and_select_lines_reference_based(
+                                    remaining_candidates, 
+                                    expected_line_count - len(ranked_lines),
+                                    generated_image, product_mask, reference_image
+                                )
+                            else:
+                                additional = self._rank_and_select_lines(
+                                    remaining_candidates,
+                                    expected_line_count - len(ranked_lines),
+                                    generated_image, product_mask
+                                )
+                            ranked_lines.extend(additional)
+                            print(f"  ✓ Added {len(additional)} additional lines from raw candidates")
+                    
+                    filtered_lines = ranked_lines
+                    print(f"  ✓ Final result: {len(filtered_lines)} lines (expected {expected_line_count})")
+                    
+                    if len(filtered_lines) < expected_line_count:
+                        print(f"  ⚠️  WARNING: Only {len(filtered_lines)} lines available, cannot meet expected count of {expected_line_count}")
                 else:
-                    print("  🔄 Using current ranking logic...")
-                    filtered_lines = self._rank_and_select_lines(filtered_lines, expected_line_count, generated_image, product_mask)
-                    print(f"  ✓ After ranking: {len(filtered_lines)} distinct lines selected")
+                    # Exactly the right count - still apply ranking to ensure best quality
+                    if settings.USE_REFERENCE_BASED_MATCHING and reference_image is not None:
+                        filtered_lines = self._rank_and_select_lines_reference_based(
+                            filtered_lines, expected_line_count, generated_image, product_mask, reference_image
+                        )
+                    else:
+                        filtered_lines = self._rank_and_select_lines(
+                            filtered_lines, expected_line_count, generated_image, product_mask
+                        )
+                    print(f"  ✓ Perfect match: {len(filtered_lines)} lines (expected {expected_line_count})")
+            
             return filtered_lines
         except Exception as e:
             print(f"❌ Error in extract_lines_from_generated_image_only: {e}")
@@ -784,6 +876,121 @@ class CoordinateExtractor:
         
         return filtered_lines
     
+    def _filter_measurement_lines_relaxed(
+        self,
+        lines: List[dict],
+        product_mask: np.ndarray,
+        generated_image: Image.Image
+    ) -> List[dict]:
+        """
+        Relaxed version of _filter_measurement_lines with looser criteria.
+        Used when strict filtering removes too many lines.
+        """
+        h, w = product_mask.shape[:2]
+        img_arr = pil_to_numpy(generated_image)
+        
+        # Convert to grayscale for contrast analysis
+        if len(img_arr.shape) == 3:
+            gray = cv2.cvtColor(img_arr, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = img_arr
+        
+        filtered_lines = []
+        
+        # Calculate distance transform to find distance from product edges
+        mask_for_dist = product_mask.astype(np.uint8)
+        if len(mask_for_dist.shape) > 2:
+            mask_for_dist = cv2.cvtColor(mask_for_dist, cv2.COLOR_RGB2GRAY)
+        
+        inverted_mask = cv2.bitwise_not(mask_for_dist)
+        dist_transform = cv2.distanceTransform(inverted_mask, cv2.DIST_L2, 5)
+        
+        # RELAXED: Lower minimum line length (50% of strict threshold)
+        min_length = min(w, h) * settings.MEASUREMENT_LINE_MIN_LENGTH_RATIO * 0.5
+        
+        # RELAXED: Higher contrast threshold (allow slightly lighter lines)
+        relaxed_contrast_threshold = settings.MEASUREMENT_LINE_CONTRAST_THRESHOLD + 30  # Allow up to 100 instead of 70
+        relaxed_contrast_max = settings.MEASUREMENT_LINE_CONTRAST_MAX + 30  # Allow up to 130 instead of 100
+        
+        # RELAXED: Lower position threshold (50% instead of 60%)
+        relaxed_position_threshold = 0.5
+        
+        for line in lines:
+            # Get line points in pixel coordinates
+            start_x = int(line["start"]["x"] * w)
+            start_y = int(line["start"]["y"] * h)
+            end_x = int(line["end"]["x"] * w)
+            end_y = int(line["end"]["y"] * h)
+            
+            # Clamp to image bounds
+            start_x = max(0, min(w - 1, start_x))
+            start_y = max(0, min(h - 1, start_y))
+            end_x = max(0, min(w - 1, end_x))
+            end_y = max(0, min(h - 1, end_y))
+            
+            # Calculate line length
+            line_length = np.sqrt((end_x - start_x)**2 + (end_y - start_y)**2)
+            
+            # RELAXED Filter 1: Skip very short lines (but with lower threshold)
+            if line_length < min_length:
+                continue
+            
+            # Sample points along line to analyze
+            num_samples = 10
+            inside_count = 0
+            contrast_values = []
+            min_distance_to_edge = float('inf')
+            
+            for i in range(num_samples + 1):
+                t = i / num_samples
+                x = int(start_x * (1 - t) + end_x * t)
+                y = int(start_y * (1 - t) + end_y * t)
+                x = max(0, min(w - 1, x))
+                y = max(0, min(h - 1, y))
+                
+                if 0 <= y < h and 0 <= x < w:
+                    # Check if inside product
+                    if product_mask[y, x] > 0:
+                        inside_count += 1
+                    
+                    # Get distance to product edge
+                    dist_to_edge = dist_transform[y, x]
+                    min_distance_to_edge = min(min_distance_to_edge, dist_to_edge)
+                    
+                    # Check contrast
+                    pixel_value = gray[y, x]
+                    contrast_values.append(pixel_value)
+            
+            if len(contrast_values) == 0:
+                continue
+            
+            inside_ratio = inside_count / (num_samples + 1)
+            outside_ratio = 1.0 - inside_ratio
+            avg_contrast = np.mean(contrast_values)
+            max_contrast = np.max(contrast_values)
+            
+            # RELAXED Filter 2: More lenient contrast check
+            is_high_contrast = (avg_contrast < relaxed_contrast_threshold and 
+                              max_contrast < relaxed_contrast_max)
+            
+            if not is_high_contrast:
+                continue
+            
+            # RELAXED Filter 3: Lower position threshold
+            is_clear_position = (inside_ratio >= relaxed_position_threshold or 
+                               outside_ratio >= relaxed_position_threshold)
+            
+            if not is_clear_position:
+                continue
+            
+            # RELAXED: For outside lines, no minimum separation requirement (or very low)
+            # (We skip the edge separation check in relaxed mode)
+            
+            # Keep line if it meets relaxed criteria
+            filtered_lines.append(line)
+        
+        return filtered_lines
+    
     def _are_lines_similar(
         self,
         line1: dict,
@@ -1032,6 +1239,27 @@ class CoordinateExtractor:
         print(f"    📊 Reference pattern: {ref_inside_count} inside, {ref_outside_count} outside")
         
         # Step 3: For each reference line, find best matching generated line
+        # If reference has more lines than expected, prioritize by length (longer = more important)
+        if len(ref_lines_classified) > expected_count:
+            print(f"    ⚠️  Reference has {len(ref_lines_classified)} lines, but only {expected_count} expected")
+            print(f"    🔄 Prioritizing longest reference lines for matching...")
+            # Sort reference lines by length (longer = more important)
+            ref_lines_with_length = []
+            ref_h, ref_w = ref_product_mask.shape[:2]
+            for ref_item in ref_lines_classified:
+                ref_line = ref_item["line"]
+                start_x = ref_line["start"]["x"] * reference_image.size[0]
+                start_y = ref_line["start"]["y"] * reference_image.size[1]
+                end_x = ref_line["end"]["x"] * reference_image.size[0]
+                end_y = ref_line["end"]["y"] * reference_image.size[1]
+                length = np.sqrt((end_x - start_x)**2 + (end_y - start_y)**2)
+                ref_lines_with_length.append((length, ref_item))
+            # Sort by length descending
+            ref_lines_with_length.sort(key=lambda x: x[0], reverse=True)
+            # Take only the top expected_count reference lines
+            ref_lines_classified = [item for _, item in ref_lines_with_length[:expected_count]]
+            print(f"    ✓ Using top {len(ref_lines_classified)} longest reference lines")
+        
         selected = []
         used_generated_indices = set()
         
@@ -1104,14 +1332,44 @@ class CoordinateExtractor:
         
         # If we didn't get enough matches, fill remaining slots with current logic
         if len(selected) < expected_count:
-            print(f"    ⚠️  Only found {len(selected)} matches, filling remaining {expected_count - len(selected)} slots with current logic")
+            remaining_needed = expected_count - len(selected)
+            print(f"    ⚠️  Only found {len(selected)} matches, filling remaining {remaining_needed} slots with current logic")
             remaining_lines = [line for idx, line in enumerate(lines) if idx not in used_generated_indices]
             if remaining_lines:
+                # Try to get the needed count, but if we can't find enough distinct lines,
+                # we'll take what we can get (but log a warning)
                 remaining_selected = self._rank_and_select_lines(
-                    remaining_lines, expected_count - len(selected), generated_image, product_mask,
+                    remaining_lines, remaining_needed, generated_image, product_mask,
                     existing_lines=selected
                 )
                 selected.extend(remaining_selected)
+                
+                # If we still don't have enough, try to be less strict about duplicates
+                if len(selected) < expected_count and len(remaining_lines) > len(remaining_selected):
+                    print(f"    ⚠️  Only got {len(remaining_selected)} additional lines, need {remaining_needed - len(remaining_selected)} more")
+                    print(f"    🔄 Attempting to fill remaining slots with less strict duplicate checking...")
+                    
+                    # Get lines that weren't selected (might be similar but still valid)
+                    remaining_candidates = [line for line in remaining_lines if line not in remaining_selected]
+                    
+                    # Try to add more lines even if they're somewhat similar
+                    for candidate in remaining_candidates:
+                        if len(selected) >= expected_count:
+                            break
+                        
+                        # Check if it's too similar to already selected (but be more lenient)
+                        is_too_similar = False
+                        for existing in selected:
+                            if self._are_lines_similar(candidate, existing, generated_image):
+                                is_too_similar = True
+                                break
+                        
+                        if not is_too_similar:
+                            selected.append(candidate)
+                            print(f"    ✓ Added additional line to reach expected count")
+                    
+                    if len(selected) < expected_count:
+                        print(f"    ⚠️  WARNING: Could only get {len(selected)} lines, expected {expected_count}")
         
         return selected[:expected_count]
     

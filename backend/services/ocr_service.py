@@ -1,4 +1,4 @@
-import easyocr
+from rapidocr_onnxruntime import RapidOCR
 import numpy as np
 from PIL import Image
 from typing import List, Tuple, Optional
@@ -7,10 +7,10 @@ from utils.image_utils import pil_to_numpy
 
 class OCRService:
     def __init__(self):
-        """Initialize EasyOCR reader with English language support"""
-        print("🔄 Initializing EasyOCR reader...")
-        self.reader = easyocr.Reader(['en'], gpu=False)  # Use CPU for compatibility
-        print("✓ EasyOCR reader initialized")
+        """Initialize RapidOCR reader"""
+        print("🔄 Initializing RapidOCR reader...")
+        self.engine = RapidOCR()
+        print("✓ RapidOCR reader initialized")
     
     def _preprocess_for_ocr(self, image: Image.Image) -> np.ndarray:
         """
@@ -70,22 +70,26 @@ class OCRService:
         # Run OCR with adjusted parameters
         # contrast_ths: lower = more sensitive to low contrast text
         # adjust_contrast: enhance contrast before detection
-        results = self.reader.readtext(
-            preprocessed,
-            contrast_ths=0.1,      # Lower threshold for low-contrast text (default: 0.5)
-            adjust_contrast=0.8,   # Adjust contrast (default: 0.5)
-            text_threshold=0.5,    # Text detection threshold (default: 0.7)
-            low_text=0.3          # Low text threshold (default: 0.4)
-        )
+        results, _ = self.engine(preprocessed)
+        if not results:
+            results = []
         
         print(f"  ✓ OCR detected {len(results)} text regions")
         
         # Process results
         labels = []
         for bbox, text, confidence in results:
+            # Ensure confidence is float before comparison
+            try:
+                conf_val = float(confidence)
+            except (ValueError, TypeError):
+                # Fallback if confidence is completely weird, assume 0.0
+                print(f"  ⚠️  Invalid confidence value: {confidence}, treating as 0.0")
+                conf_val = 0.0
+
             # Lower confidence threshold to catch more detections
-            if confidence < 0.3:  # Lowered from 0.5
-                print(f"  ⚠️  Skipping low-confidence text: '{text}' (confidence: {confidence:.2f})")
+            if conf_val < 0.3:  # Lowered from 0.5
+                print(f"  ⚠️  Skipping low-confidence text: '{text}' (confidence: {conf_val:.2f})")
                 continue
             
             # Optional: Filter by expected label patterns
@@ -101,17 +105,20 @@ class OCRService:
             # Calculate center point from bounding box
             # bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
             bbox_array = np.array(bbox)
-            center_x = np.mean(bbox_array[:, 0]) / w  # Normalize to 0-1
-            center_y = np.mean(bbox_array[:, 1]) / h  # Normalize to 0-1
+            center_x = float(np.mean(bbox_array[:, 0]) / w)  # Normalize to 0-1
+            center_y = float(np.mean(bbox_array[:, 1]) / h)  # Normalize to 0-1
+            
+            # Ensure safe types for serialization
+            safe_bbox = [[float(p[0]), float(p[1])] for p in bbox]
             
             labels.append({
-                "text": text.strip(),
-                "bbox": bbox,
+                "text": str(text).strip(),
+                "bbox": safe_bbox,
                 "center": (center_x, center_y),
-                "confidence": confidence
+                "confidence": float(conf_val)
             })
             
-            print(f"  ✓ Extracted label: '{text}' at ({center_x:.3f}, {center_y:.3f}), confidence: {confidence:.2f}")
+            print(f"  ✓ Extracted label: '{text}' at ({center_x:.3f}, {center_y:.3f}), confidence: {conf_val:.2f}")
         
         print(f"✓ Extracted {len(labels)} valid labels")
         return labels

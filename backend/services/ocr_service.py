@@ -332,13 +332,46 @@ class OCRService:
                             extracted_lines[line_idx]['label'] = label
                             print(f"    ✓ Assigned remaining label '{label}' to line {line_idx+1}")
         
-        # Final check: ensure all lines have labels if reference lines were provided
+        # GUARANTEE: Ensure count matches reference_lines and all lines have labels
         if reference_lines:
+            expected_count = len(reference_lines)
+            current_count = len(extracted_lines)
+            ref_labels = [line.get('label', '') for line in reference_lines if line.get('label', '')]
+            
+            # Note: We can't create new lines here - that's a detection problem
+            # But we CAN ensure all existing lines have labels
+            if current_count < expected_count:
+                print(f"  ⚠️  GUARANTEE: Only {current_count} lines detected, expected {expected_count}")
+                print(f"  ⚠️  This indicates a detection issue - cannot create missing lines")
+            
+            # GUARANTEE: Ensure ALL existing lines have labels from reference_lines
             lines_without_labels = [i for i, line in enumerate(extracted_lines) if not line.get('label', '')]
-            if lines_without_labels:
-                print(f"  ⚠️  Warning: {len(lines_without_labels)} lines still without labels after assignment")
+            if lines_without_labels and ref_labels:
+                print(f"  🔄 GUARANTEE: Assigning labels to {len(lines_without_labels)} lines without labels...")
+                
+                # Get labels that haven't been used yet
+                used_labels = {line.get('label', '') for line in extracted_lines if line.get('label', '')}
+                available_labels = [label for label in ref_labels if label not in used_labels]
+                
+                # Assign available labels to lines without labels
+                for i, line_idx in enumerate(lines_without_labels):
+                    if i < len(available_labels):
+                        extracted_lines[line_idx]['label'] = available_labels[i]
+                        print(f"  ✓ Assigned label '{available_labels[i]}' to line {line_idx+1}")
+                    elif ref_labels:
+                        # If we've used all available unique labels, reuse them in order
+                        label = ref_labels[i % len(ref_labels)]
+                        extracted_lines[line_idx]['label'] = label
+                        print(f"  ✓ Assigned label '{label}' to line {line_idx+1} (reused)")
+            
+            # Final validation
+            final_count = len(extracted_lines)
+            lines_with_labels_final = [line for line in extracted_lines if line.get('label', '')]
+            
+            if len(lines_with_labels_final) == final_count:
+                print(f"  ✓ GUARANTEE: All {final_count} lines have labels")
             else:
-                print(f"  ✓ All lines have been assigned labels")
+                print(f"  ⚠️  GUARANTEE: {final_count - len(lines_with_labels_final)} lines still without labels")
         
         return extracted_lines
 

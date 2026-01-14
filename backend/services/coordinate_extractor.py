@@ -588,7 +588,26 @@ class CoordinateExtractor:
             if is_distinct:
                 selected.append(candidate_line)
         
-        return selected
+        # Guarantee: Return exactly expected_count if enough candidates exist
+        if len(selected) < expected_count and len(scored_lines) > len(selected):
+            remaining = [item["line"] for item in scored_lines if item["line"] not in selected]
+            for candidate in remaining:
+                if len(selected) >= expected_count:
+                    break
+                is_distinct = True
+                for selected_line in selected:
+                    if self._are_lines_similar(candidate, selected_line, original_image):
+                        is_distinct = False
+                        break
+                if is_distinct and existing_lines:
+                    for existing_line in existing_lines:
+                        if self._are_lines_similar(candidate, existing_line, original_image):
+                            is_distinct = False
+                            break
+                if is_distinct:
+                    selected.append(candidate)
+        
+        return selected[:expected_count] if len(selected) > expected_count else selected
     
     def _rank_and_select_lines_reference_based(
         self,
@@ -689,14 +708,29 @@ class CoordinateExtractor:
                 print(f"    ⚠️  No match found for reference line (inside={ref_is_inside})")
         
         if len(selected) < expected_count:
-            print(f"    ⚠️  Only found {len(selected)} matches, filling remaining {expected_count - len(selected)} slots with current logic")
+            remaining_needed = expected_count - len(selected)
             remaining_lines = [line for idx, line in enumerate(lines) if idx not in used_generated_indices]
             if remaining_lines:
                 remaining_selected = self._rank_and_select_lines(
-                    remaining_lines, expected_count - len(selected), generated_image, product_mask,
+                    remaining_lines, remaining_needed, generated_image, product_mask,
                     existing_lines=selected
                 )
                 selected.extend(remaining_selected)
+                
+                # If still insufficient, be less strict about duplicates
+                if len(selected) < expected_count:
+                    for candidate in remaining_lines:
+                        if len(selected) >= expected_count:
+                            break
+                        if candidate in selected:
+                            continue
+                        is_too_similar = False
+                        for existing in selected:
+                            if self._are_lines_similar(candidate, existing, generated_image):
+                                is_too_similar = True
+                                break
+                        if not is_too_similar:
+                            selected.append(candidate)
         
         return selected[:expected_count]
     

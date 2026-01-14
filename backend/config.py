@@ -17,7 +17,7 @@ class Settings:
     MAX_LINE_GAP: int = 10
     SNAP_TO_EDGE_THRESHOLD: int = 20  # pixels
     FEATURE_MATCH_THRESHOLD: float = 0.1  # normalized distance threshold
-    LINE_SIMILARITY_DISTANCE_THRESHOLD: float = 0.05  # normalized distance (0-1) between line midpoints to be considered similar
+    LINE_SIMILARITY_DISTANCE_THRESHOLD: float = 0.02  # normalized distance (0-1) between line midpoints to be considered similar
     LINE_SIMILARITY_ANGLE_THRESHOLD: float = 15.0  # degrees - max angle difference to be considered similar
     LINE_OVERLAP_THRESHOLD: float = 0.7  # minimum overlap ratio to consider lines as duplicates
     MEASUREMENT_LINE_MIN_LENGTH_RATIO: float = 0.05  # 5% of image dimension

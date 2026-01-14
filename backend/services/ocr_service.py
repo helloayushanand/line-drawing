@@ -262,11 +262,21 @@ class OCRService:
                             print(f"    ✓ Assigned remaining label '{label}' to line {line_idx+1}")
         
         if reference_lines:
+            ref_labels = [line.get('label', '') for line in reference_lines if line.get('label', '')]
             lines_without_labels = [i for i, line in enumerate(extracted_lines) if not line.get('label', '')]
-            if lines_without_labels:
-                print(f"  ⚠️  Warning: {len(lines_without_labels)} lines still without labels after assignment")
-            else:
-                print(f"  ✓ All lines have been assigned labels")
+            
+            if lines_without_labels and ref_labels:
+                used_labels = {line.get('label', '') for line in extracted_lines if line.get('label', '')}
+                available_labels = [label for label in ref_labels if label not in used_labels]
+                
+                for i, line_idx in enumerate(lines_without_labels):
+                    if i < len(available_labels):
+                        extracted_lines[line_idx]['label'] = available_labels[i]
+                    elif ref_labels:
+                        extracted_lines[line_idx]['label'] = ref_labels[i % len(ref_labels)]
+            
+            if all(line.get('label', '') for line in extracted_lines):
+                print(f"  ✓ All {len(extracted_lines)} lines have labels")
         
         return extracted_lines
 

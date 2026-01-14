@@ -17,14 +17,14 @@ class Settings:
     MAX_LINE_GAP: int = 10
     SNAP_TO_EDGE_THRESHOLD: int = 20  # pixels
     FEATURE_MATCH_THRESHOLD: float = 0.1  # normalized distance threshold
-    LINE_SIMILARITY_DISTANCE_THRESHOLD: float = 0.02  # normalized distance (0-1) between line midpoints to be considered similar
+    LINE_SIMILARITY_DISTANCE_THRESHOLD: float = 0.005  # normalized distance (0-1) between line midpoints to be considered similar
     LINE_SIMILARITY_ANGLE_THRESHOLD: float = 15.0  # degrees - max angle difference to be considered similar
     LINE_OVERLAP_THRESHOLD: float = 0.7  # minimum overlap ratio to consider lines as duplicates
     MEASUREMENT_LINE_MIN_LENGTH_RATIO: float = 0.05  # 5% of image dimension
     MEASUREMENT_LINE_CONTRAST_THRESHOLD: int = 70  # max average pixel value for black lines
     MEASUREMENT_LINE_CONTRAST_MAX: int = 100  # max pixel value allowed in line
     MEASUREMENT_LINE_EDGE_SEPARATION: int = 1  # min pixels from edge for outside lines
-    MEASUREMENT_LINE_POSITION_THRESHOLD: float = 0.6  # 70% threshold for inside/outside classification
+    MEASUREMENT_LINE_POSITION_THRESHOLD: float = 0.5  # 70% threshold for inside/outside classification
     BLACK_LINE_THRESHOLD: int = 100  # pixel value threshold for black lines
     LINE_MORPH_KERNEL_SIZE: int = 3  # kernel size for morphological operations
     USE_REFERENCE_BASED_MATCHING: bool = True  # Set to True to use reference-based line matching instead of current logic

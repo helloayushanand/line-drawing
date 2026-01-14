@@ -1,32 +1,16 @@
-import easyocr
+from rapidocr_onnxruntime import RapidOCR
 import numpy as np
 from PIL import Image
-from typing import List, Tuple, Optional
+from typing import List, Optional
 from utils.image_utils import pil_to_numpy
 
 
 class OCRService:
     def __init__(self):
-        """Initialize EasyOCR reader with English language support"""
-        print("🔄 Initializing EasyOCR reader...")
-        self.reader = easyocr.Reader(['en'], gpu=False)  # Use CPU for compatibility
-        print("✓ EasyOCR reader initialized")
+        self.engine = RapidOCR()
     
     def _preprocess_for_ocr(self, image: Image.Image) -> np.ndarray:
-        """Convert PIL image to numpy array for OCR"""
         img_arr = pil_to_numpy(image)
-        
-        try:
-            from datetime import datetime
-            import os
-            debug_dir = os.path.join(os.path.dirname(__file__), "..", "generated_images")
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            debug_path = os.path.join(debug_dir, f"debug_ocr_input_{timestamp}.png")
-            Image.fromarray(img_arr).save(debug_path)
-            print(f"  💾 Saved debug OCR input to: {debug_path}")
-        except Exception as e:
-            print(f"  ⚠️  Failed to save debug OCR image: {e}")
-        
         return img_arr
     
     def extract_labels(
@@ -34,26 +18,21 @@ class OCRService:
         image: Image.Image,
         expected_labels: Optional[List[str]] = None
     ) -> List[dict]:
-        """Extract text labels and their positions from image"""
-        print("\n🔍 Extracting labels from image using OCR...")
-        print("  🔄 Preprocessing image for OCR...")
         preprocessed = self._preprocess_for_ocr(image)
         h, w = preprocessed.shape[:2]
         
-        results = self.reader.readtext(
-            preprocessed,
-            contrast_ths=0.1,
-            adjust_contrast=0.8,
-            text_threshold=0.5,
-            low_text=0.3
-        )
-        
-        print(f"  ✓ OCR detected {len(results)} text regions")
+        results, _ = self.engine(preprocessed)
+        if not results:
+            results = []
         
         labels = []
         for bbox, text, confidence in results:
-            if confidence < 0.3:
-                print(f"  ⚠️  Skipping low-confidence text: '{text}' (confidence: {confidence:.2f})")
+            try:
+                conf_val = float(confidence)
+            except (ValueError, TypeError):
+                conf_val = 0.0
+
+            if conf_val < 0.3:
                 continue
             
             if expected_labels:
@@ -61,23 +40,21 @@ class OCRService:
                 matches = any(expected.lower() in text_lower or text_lower in expected.lower() 
                              for expected in expected_labels)
                 if not matches:
-                    print(f"  ⚠️  Skipping unexpected text: '{text}'")
                     continue
             
             bbox_array = np.array(bbox)
-            center_x = np.mean(bbox_array[:, 0]) / w
-            center_y = np.mean(bbox_array[:, 1]) / h
+            center_x = float(np.mean(bbox_array[:, 0]) / w)
+            center_y = float(np.mean(bbox_array[:, 1]) / h)
+            
+            safe_bbox = [[float(p[0]), float(p[1])] for p in bbox]
             
             labels.append({
-                "text": text.strip(),
-                "bbox": bbox,
+                "text": str(text).strip(),
+                "bbox": safe_bbox,
                 "center": (center_x, center_y),
-                "confidence": confidence
+                "confidence": float(conf_val)
             })
-            
-            print(f"  ✓ Extracted label: '{text}' at ({center_x:.3f}, {center_y:.3f}), confidence: {confidence:.2f}")
         
-        print(f"✓ Extracted {len(labels)} valid labels")
         return labels
     
     def match_lines_to_labels(
@@ -86,11 +63,7 @@ class OCRService:
         ocr_labels: List[dict],
         reference_lines: Optional[List[dict]] = None
     ) -> List[dict]:
-        """Match extracted lines to OCR labels by proximity"""
-        print("\n🔗 Matching extracted lines to OCR labels...")
-        
         if not ocr_labels:
-            print("  ⚠️  No OCR labels found, returning lines without labels")
             return extracted_lines
         
         ref_label_map = {}
@@ -99,9 +72,6 @@ class OCRService:
                 label = ref_line.get('label', '')
                 if label:
                     ref_label_map[label.lower().strip()] = label
-        
-        print(f"  📋 Reference labels: {list(ref_label_map.values())}")
-        print(f"  🔍 OCR detected labels: {[l['text'] for l in ocr_labels]}")
         
         normalized_ocr_labels = []
         for ocr_label in ocr_labels:
@@ -118,7 +88,6 @@ class OCRService:
                 
                 if len(matches) == 1:
                     matched_ref_label = matches[0]
-                    print(f"  🔄 Fuzzy matched '{ocr_text}' → '{matched_ref_label}'")
             
             if matched_ref_label:
                 normalized_ocr_labels.append({
@@ -133,10 +102,7 @@ class OCRService:
                     'is_valid_ref': False
                 })
         
-        possible_matches = []
-        
         def point_to_segment_distance(px, py, x1, y1, x2, y2):
-            """Calculate minimum distance from point to line segment"""
             dx = x2 - x1
             dy = y2 - y1
             if dx == 0 and dy == 0:
@@ -148,6 +114,7 @@ class OCRService:
             closest_y = y1 + t * dy
             return np.sqrt((px - closest_x)**2 + (py - closest_y)**2)
 
+        possible_matches = []
         for i, line in enumerate(extracted_lines):
             x1, y1 = line["start"]["x"], line["start"]["y"]
             x2, y2 = line["end"]["x"], line["end"]["y"]
@@ -174,7 +141,6 @@ class OCRService:
         for line in extracted_lines:
             line['label'] = ''
             
-        print("\n  🔗 Assigning labels (greedy unique matching):")
         for match in possible_matches:
             line_idx = match['line_idx']
             label_text = match['label_text']
@@ -185,9 +151,6 @@ class OCRService:
             extracted_lines[line_idx]['label'] = label_text
             matched_line_indices.add(line_idx)
             matched_labels.add(label_text)
-            print(f"    ✓ Line {line_idx+1} matched to '{label_text}' (dist: {match['distance']:.3f})")
-            
-        print(f"✓ Matched {len(matched_line_indices)} lines to unique labels")
         
         if reference_lines:
             unmatched_line_indices = [i for i, line in enumerate(extracted_lines) 
@@ -196,10 +159,6 @@ class OCRService:
                                    if label not in matched_labels]
             
             if unmatched_line_indices and unmatched_ref_labels:
-                print(f"\n  🔄 Assigning unmatched labels to unmatched lines...")
-                print(f"    Unmatched lines: {len(unmatched_line_indices)}")
-                print(f"    Unmatched labels: {unmatched_ref_labels}")
-                
                 ref_line_positions = {}
                 for ref_line in reference_lines:
                     label = ref_line.get('label', '')
@@ -248,18 +207,15 @@ class OCRService:
                     extracted_lines[line_idx]['label'] = label
                     used_line_indices.add(line_idx)
                     used_labels.add(label)
-                    print(f"    ✓ Assigned unmatched label '{label}' to line {line_idx+1} (dist: {match['distance']:.3f})")
                 
                 remaining_unmatched_lines = [i for i in unmatched_line_indices if i not in used_line_indices]
                 remaining_unmatched_labels = [l for l in unmatched_ref_labels if l not in used_labels]
                 
                 if remaining_unmatched_lines and remaining_unmatched_labels:
-                    print(f"    🔄 Assigning remaining {len(remaining_unmatched_labels)} labels to {len(remaining_unmatched_lines)} lines...")
                     for i, line_idx in enumerate(remaining_unmatched_lines):
                         if i < len(remaining_unmatched_labels):
                             label = remaining_unmatched_labels[i]
                             extracted_lines[line_idx]['label'] = label
-                            print(f"    ✓ Assigned remaining label '{label}' to line {line_idx+1}")
         
         if reference_lines:
             ref_labels = [line.get('label', '') for line in reference_lines if line.get('label', '')]
@@ -274,9 +230,6 @@ class OCRService:
                         extracted_lines[line_idx]['label'] = available_labels[i]
                     elif ref_labels:
                         extracted_lines[line_idx]['label'] = ref_labels[i % len(ref_labels)]
-            
-            if all(line.get('label', '') for line in extracted_lines):
-                print(f"  ✓ All {len(extracted_lines)} lines have labels")
         
         return extracted_lines
 

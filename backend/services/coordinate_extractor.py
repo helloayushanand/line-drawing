@@ -459,21 +459,27 @@ class CoordinateExtractor:
         if angle_diff < settings.LINE_SIMILARITY_ANGLE_THRESHOLD:
             # If lines are parallel and close, check overlap
             # Calculate perpendicular distance between parallel lines
-            # For parallel lines: distance = |ax + by + c| / sqrt(a^2 + b^2)
-            # Using line equation: ax + by + c = 0
-            if abs(line1_dx) < 1e-6:  # Vertical line
-                perp_distance = abs(line1_mid_x - line2_mid_x) / w
-            elif abs(line1_dy) < 1e-6:  # Horizontal line
-                perp_distance = abs(line1_mid_y - line2_mid_y) / h
+            # Normalize by diagonal (same as midpoint distance) for consistency
+            max_distance = np.sqrt(w**2 + h**2)
+            
+            if abs(line1_dx) < 1e-6:  # Vertical line (line1)
+                perp_distance_pixels = abs(line1_mid_x - line2_mid_x)
+            elif abs(line1_dy) < 1e-6:  # Horizontal line (line1)
+                perp_distance_pixels = abs(line1_mid_y - line2_mid_y)
+            elif abs(line2_dx) < 1e-6:  # Vertical line (line2)
+                perp_distance_pixels = abs(line1_mid_x - line2_mid_x)
+            elif abs(line2_dy) < 1e-6:  # Horizontal line (line2)
+                perp_distance_pixels = abs(line1_mid_y - line2_mid_y)
             else:
                 # General line: y = mx + b
                 m1 = line1_dy / line1_dx
                 b1 = line1_start_y - m1 * line1_start_x
                 m2 = line2_dy / line2_dx
                 b2 = line2_start_y - m2 * line2_start_x
-                
-                # Distance between parallel lines
-                perp_distance = abs(b1 - b2) / np.sqrt(m1**2 + 1) / max(w, h)
+                perp_distance_pixels = abs(b1 - b2) / np.sqrt(m1**2 + 1)
+            
+            # Normalize by diagonal (same as midpoint distance)
+            perp_distance = perp_distance_pixels / max_distance if max_distance > 0 else 0
             
             # If parallel and very close, they're similar
             if perp_distance < settings.LINE_SIMILARITY_DISTANCE_THRESHOLD:
@@ -674,11 +680,14 @@ class CoordinateExtractor:
                 if gen_idx in used_generated_indices:
                     continue
                 
+                # Filter 1: Must match inside/outside (with tolerance)
                 gen_inside_ratio = self._calculate_inside_ratio(gen_line, product_mask, generated_image)
                 gen_is_inside = gen_inside_ratio >= settings.MEASUREMENT_LINE_POSITION_THRESHOLD
                 
-                if gen_is_inside != ref_is_inside:
-                    continue
+                # Allow tolerance: if ratios are close, consider them matching
+                ratio_diff = abs(gen_inside_ratio - ref_item["inside_ratio"])
+                if gen_is_inside != ref_is_inside and ratio_diff > 0.2:  # 20% tolerance
+                    continue  # Skip only if clearly different
                 
                 score = self._calculate_line_match_score(
                     ref_line, gen_line,
@@ -693,17 +702,63 @@ class CoordinateExtractor:
                     best_idx = gen_idx
             
             if best_match is not None and best_score > 0:
+                # Check if this line is too similar to any already selected line
                 is_duplicate = False
                 for already_selected in selected:
                     if self._are_lines_similar(best_match, already_selected, generated_image):
                         is_duplicate = True
-                        print(f"    ⚠️  Skipping duplicate line (too similar to already selected line)")
                         break
                 
                 if not is_duplicate:
                     selected.append(best_match)
                     used_generated_indices.add(best_idx)
                     print(f"    ✓ Matched reference line: score={best_score:.3f}, inside={ref_is_inside}")
+                else:
+                    # Try to find next best match that's not a duplicate
+                    print(f"    ⚠️  Best match is duplicate, searching for next best...")
+                    # Search remaining candidates for non-duplicate match
+                    next_best_match = None
+                    next_best_score = -1
+                    next_best_idx = -1
+                    
+                    for gen_idx, gen_line in enumerate(lines):
+                        if gen_idx in used_generated_indices or gen_idx == best_idx:
+                            continue
+                        
+                        # Check inside/outside with tolerance
+                        gen_inside_ratio = self._calculate_inside_ratio(gen_line, product_mask, generated_image)
+                        gen_is_inside = gen_inside_ratio >= settings.MEASUREMENT_LINE_POSITION_THRESHOLD
+                        ratio_diff = abs(gen_inside_ratio - ref_item["inside_ratio"])
+                        if gen_is_inside != ref_is_inside and ratio_diff > 0.2:
+                            continue
+                        
+                        # Check if this candidate is also a duplicate
+                        is_cand_duplicate = False
+                        for already_selected in selected:
+                            if self._are_lines_similar(gen_line, already_selected, generated_image):
+                                is_cand_duplicate = True
+                                break
+                        
+                        if is_cand_duplicate:
+                            continue
+                        
+                        # Calculate match score
+                        score = self._calculate_line_match_score(
+                            ref_line, gen_line,
+                            ref_product_mask, product_mask,
+                            reference_image, generated_image,
+                            dist_transform, h, w
+                        )
+                        
+                        if score > next_best_score:
+                            next_best_score = score
+                            next_best_match = gen_line
+                            next_best_idx = gen_idx
+                    
+                    if next_best_match is not None and next_best_score > 0:
+                        selected.append(next_best_match)
+                        used_generated_indices.add(next_best_idx)
+                        print(f"    ✓ Matched reference line (next best): score={next_best_score:.3f}, inside={ref_is_inside}")
             else:
                 print(f"    ⚠️  No match found for reference line (inside={ref_is_inside})")
         

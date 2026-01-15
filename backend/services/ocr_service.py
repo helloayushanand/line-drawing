@@ -345,7 +345,7 @@ class OCRService:
             current_count = len(extracted_lines)
             ref_labels = [line.get('label', '') for line in reference_lines if line.get('label', '')]
             
-            # Note: We can't create new lines here - that's a detection problem
+            
             # But we CAN ensure all existing lines have labels
             if current_count < expected_count:
                 print(f"  ⚠️  GUARANTEE: Only {current_count} lines detected, expected {expected_count}")

@@ -180,12 +180,6 @@ class CoordinateExtractor:
                     "label": ""
                 })
         
-                result.append({
-                    "start": {"x": x1 / w, "y": y1 / h},
-                    "end": {"x": x2 / w, "y": y2 / h},
-                    "label": ""
-                })
-        
         return result
 
     def _extend_line_to_full_extent(

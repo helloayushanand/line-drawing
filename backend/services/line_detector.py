@@ -1,11 +1,12 @@
 import time
 from typing import List, Tuple, Optional
 from PIL import Image
+import base64
 from services.gemini_service import GeminiService
 from services.flux_service import FluxService
 from services.coordinate_extractor import CoordinateExtractor
 from services.ocr_service import OCRService
-from utils.image_utils import decode_base64_image, pil_to_numpy, encode_image_to_base64, resize_image, expand_canvas_to_aspect_ratio
+from utils.image_utils import decode_base64_image, pil_to_numpy, encode_image_to_base64, resize_image, expand_canvas_to_aspect_ratio, fade_to_grey_black, add_watermark_label, fit_image_to_reference_canvas
 from utils.edge_detection import detect_edges
 from models.schemas import LineDrawing, Point
 from config import settings
@@ -42,13 +43,37 @@ class LineDetector:
         print("🔄 Resizing images to max 1024px for consistent processing...")
         input_img_square = resize_image(input_img, 1024)
         ref_img_square = resize_image(ref_img, 1024)
-        print(f"✓ Input image resized: {input_img.size} -> {input_img_square.size}")
-        print(f"✓ Reference image resized: {ref_img.size} -> {ref_img_square.size}")
         
-        input_base64_square = encode_image_to_base64(input_img_square)
-        ref_base64_square = encode_image_to_base64(ref_img_square)
-        input_image_base64_square = f"data:image/png;base64,{input_base64_square}"
-        reference_image_base64_square = f"data:image/png;base64,{ref_base64_square}"
+        # Fit input image to match reference dimensions (replicates FE canvas behavior)
+      
+        from utils.image_utils import fit_image_to_reference_canvas
+        input_img_fitted = fit_image_to_reference_canvas(input_img_square, ref_img_square)
+        
+      
+        # Apply faded grey/black effect only to input image (not reference)
+        input_img_faded = fade_to_grey_black(input_img_fitted)
+        
+        
+        input_img_labeled = add_watermark_label(input_img_faded, "INPUT IMAGE")
+        ref_img_labeled = add_watermark_label(ref_img_square, "REFERENCE IMAGE")
+        
+        # Save processed images to backend folder for inspection
+        import os
+        from datetime import datetime
+        backend_dir = os.path.dirname(os.path.dirname(__file__))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        input_save_path = os.path.join(backend_dir, f"input_image_processed_{timestamp}.png")
+        ref_save_path = os.path.join(backend_dir, f"reference_image_processed_{timestamp}.png")
+        
+        input_img_labeled.save(input_save_path)
+        ref_img_labeled.save(ref_save_path)
+        
+        
+        input_base64_fitted = encode_image_to_base64(input_img_labeled)
+        ref_base64 = encode_image_to_base64(ref_img_labeled)
+        input_image_base64_fitted = f"data:image/png;base64,{input_base64_fitted}"
+        reference_image_base64 = f"data:image/png;base64,{ref_base64}"
         
         model_name = (model or "gemini").lower()
         generated_image = None
@@ -59,8 +84,8 @@ class LineDetector:
                     "Flux service is not available. Please set BFL_API_KEY environment variable."
                 )
             generated_image = self.flux.generate_image_with_lines(
-                input_image_base64_square,
-                reference_image_base64_square,
+                input_image_base64_fitted,
+                reference_image_base64,
                 product_type=product_type,
                 line_types=line_types,
                 expected_line_count=expected_line_count,
@@ -68,10 +93,12 @@ class LineDetector:
             )
 
         else:
+            print("BEGFORE SAVE")
+            input_img_fitted.save("input_image_base64_fitted.png")
             print("\n📸 Attempting Gemini 3 image generation...")
             generated_image = self.gemini.generate_image_with_lines(
-                input_image_base64_square,
-                reference_image_base64_square,
+                input_image_base64_fitted,
+                reference_image_base64,
                 product_type,
                 line_types,
                 expected_line_count=expected_line_count,
@@ -147,7 +174,7 @@ class LineDetector:
         
         generated_image_base64 = encode_image_to_base64(generated_image)
         generated_image_base64 = f"data:image/png;base64,{generated_image_base64}"
-        input_image_base64_resized = encode_image_to_base64(input_img_square)
+        input_image_base64_resized = encode_image_to_base64(input_img_fitted)
         input_image_base64_resized = f"data:image/png;base64,{input_image_base64_resized}"
         
         processing_time = time.time() - start_time
